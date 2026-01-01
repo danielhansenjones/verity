@@ -1,0 +1,10 @@
+/.env
+/data/postgres/
+/data/redis/
+/data/minio/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
