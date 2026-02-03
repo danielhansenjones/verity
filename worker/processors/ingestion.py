@@ -84,7 +84,8 @@ def run(job: Job, db: Session, storage: StorageClient) -> None:
 
     if not sections:
         raise ValueError(
-            "chunking produced no output - PDF may contain only images or non-text content"
+            "chunking produced no output"
+            " - PDF may contain only images or non-text content"
         )
 
     logger.info("ingestion: %d chunks produced", len(sections))

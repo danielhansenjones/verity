@@ -190,7 +190,9 @@ def get_report(job_id: str):
         if job.status != JobStatus.COMPLETED:
             raise HTTPException(
                 status_code=409,
-                detail=f"Job is not completed yet (status={job.status}, stage={job.stage})",
+                detail=(
+                    f"Job is not completed yet (status={job.status}, stage={job.stage})"
+                ),
             )
 
         result = db.query(RiskResult).filter(RiskResult.job_id == job_id).first()
