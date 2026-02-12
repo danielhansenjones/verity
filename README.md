@@ -97,6 +97,37 @@ Document score = weighted average of chunk scores. Thresholds: `low < 35`, `35 <
 ### Stage 4 - Assembly
 Aggregates chunk scores and flags into a `RiskResult`, writes the full JSON report to MinIO, and marks the job `completed`.
 
+## Architecture and scaling
+
+Four tiers are deliberately separated: API, queue, worker, storage. Each scales, fails, and deploys independently. Full design rationale lives in [`docs/DESIGN.md`](docs/DESIGN.md).
+
+### Scaling axes
+
+- **API tier**: stateless. Horizontal scale behind a load balancer. No in-process queue, no session state. Idempotency makes retried submissions safe (see `docs/DESIGN.md` section 3).
+- **Worker tier**: one consumer per job via atomic Redis dequeue. Add workers to raise throughput: `docker compose up --scale worker=N`. The worker loop and queue semantics are already correct for concurrent consumers.
+- **Queue**: Redis. BRPOP today; migration to Redis Streams with consumer groups is queued so crashed workers have their in-flight jobs reclaimed rather than lost.
+- **State**: Postgres. Write throughput is not the bottleneck at realistic ML inference rates, so a single primary is fine. Read replicas are the scale-out path for dashboards and audits.
+- **Blobs**: MinIO. S3-compatible so production can swap to S3/GCS without code changes.
+
+### Why not a monolith
+
+A FastAPI + BackgroundTasks + SQLite deployment would be a few hundred lines smaller. It would also:
+
+- Lose job durability across API restarts. In-memory tasks die with the process.
+- Couple API latency to ML inference cost. A 30 s classification run blocks the event loop.
+- Cap throughput at one machine. No horizontal path.
+- Lose crash isolation. A pypdf OOM in the worker takes down the API with it.
+
+The split costs a docker-compose.yml. The payoff is independent failure, scale, and deploy per tier.
+
+### Current deployment shape vs designed shape
+
+The repo ships with one worker. The architecture supports N. The bottleneck at N=1 is GPU inference on classification; scale-out is linear in worker count until Redis becomes the constraint, which it will not at the contract throughput this system targets.
+
+### What the split does not buy you
+
+Multi-tenant isolation, geographic replication, zero-downtime deploys, HA Postgres. Those are deployment-layer concerns and are explicitly out of scope for a single-zone single-tenant operation. Tracked in `docs/DESIGN.md` future work.
+
 ## CI
 
 Two workflows run on every push and pull request to `main`:
