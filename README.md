@@ -68,6 +68,16 @@ docker compose exec api python tests/seed.py
 | GET    | `/jobs`                 | List recent jobs, optional `?status=` filter      |
 | GET    | `/health`               | Postgres and Redis connectivity check             |
 
+## Auth
+
+Protected endpoints require the `X-API-Key` header. The expected value is read from the `CONTRACT_API_KEY` env var. `GET /health` is public.
+
+```bash
+curl -H "X-API-Key: $CONTRACT_API_KEY" http://localhost:8000/jobs
+```
+
+If `CONTRACT_API_KEY` is unset, auth is disabled and a warning is logged at startup. Production deploys must set the key. Constant-time comparison is used to reject wrong keys without timing leaks.
+
 ## Pipeline
 
 Processing runs in four sequential stages. On retry, the worker resumes from the last successful stage - a transient failure during scoring does not re-run ingestion.

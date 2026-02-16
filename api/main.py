@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from minio.error import S3Error
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from api.auth import require_api_key
 from shared.minio_client import StorageClient
 from shared.models import Job, JobStage, JobStatus, RiskResult, get_session, init_db
 from shared.redis_queue import JobQueue
@@ -87,7 +88,12 @@ def health():
     }
 
 
-@app.post("/jobs", response_model=JobCreatedResponse, status_code=201)
+@app.post(
+    "/jobs",
+    response_model=JobCreatedResponse,
+    status_code=201,
+    dependencies=[Depends(require_api_key)],
+)
 async def submit_job(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
@@ -133,7 +139,11 @@ async def submit_job(file: UploadFile = File(...)):
     )
 
 
-@app.get("/jobs", response_model=list[JobListItem])
+@app.get(
+    "/jobs",
+    response_model=list[JobListItem],
+    dependencies=[Depends(require_api_key)],
+)
 def list_jobs(status: Optional[str] = Query(default=None)):
     db = get_session()
     try:
@@ -159,7 +169,11 @@ def list_jobs(status: Optional[str] = Query(default=None)):
         db.close()
 
 
-@app.get("/jobs/{job_id}", response_model=JobStatusResponse)
+@app.get(
+    "/jobs/{job_id}",
+    response_model=JobStatusResponse,
+    dependencies=[Depends(require_api_key)],
+)
 def get_job(job_id: str):
     db = get_session()
     try:
@@ -179,7 +193,11 @@ def get_job(job_id: str):
         db.close()
 
 
-@app.get("/jobs/{job_id}/report", response_model=ReportResponse)
+@app.get(
+    "/jobs/{job_id}/report",
+    response_model=ReportResponse,
+    dependencies=[Depends(require_api_key)],
+)
 def get_report(job_id: str):
     db = get_session()
     try:
