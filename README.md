@@ -78,6 +78,10 @@ curl -H "X-API-Key: $CONTRACT_API_KEY" http://localhost:8000/jobs
 
 If `CONTRACT_API_KEY` is unset, auth is disabled and a warning is logged at startup. Production deploys must set the key. Constant-time comparison is used to reject wrong keys without timing leaks.
 
+## Upload limits
+
+`POST /jobs` caps the raw request body at `MAX_UPLOAD_BYTES` (default 25 MiB). Oversized uploads are rejected early by middleware with `413 Payload Too Large` before any body is parsed or written to MinIO. Requests without a `Content-Length` header are rejected with `411 Length Required`. A defensive second check on actual bytes catches forged headers.
+
 ## Pipeline
 
 Processing runs in four sequential stages. On retry, the worker resumes from the last successful stage - a transient failure during scoring does not re-run ingestion.

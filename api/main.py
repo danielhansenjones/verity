@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse
 from minio.error import S3Error
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -14,6 +15,7 @@ from api.auth import require_api_key
 from shared.minio_client import StorageClient
 from shared.models import Job, JobStage, JobStatus, RiskResult, get_session, init_db
 from shared.redis_queue import JobQueue
+from shared.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,34 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Contract Risk Pipeline", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def enforce_upload_size(request: Request, call_next):
+    # Short-circuits oversized uploads before multipart body parsing starts.
+    if request.method == "POST" and request.url.path == "/jobs":
+        raw = request.headers.get("content-length")
+        if raw is None:
+            return JSONResponse(
+                status_code=411, content={"detail": "Content-Length header required"}
+            )
+        try:
+            length = int(raw)
+        except ValueError:
+            return JSONResponse(
+                status_code=400, content={"detail": "Invalid Content-Length header"}
+            )
+        if length > settings.max_upload_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        f"Request body exceeds maximum of "
+                        f"{settings.max_upload_bytes} bytes"
+                    )
+                },
+            )
+    return await call_next(request)
 
 
 class JobCreatedResponse(BaseModel):
@@ -102,6 +132,15 @@ async def submit_job(file: UploadFile = File(...)):
     object_key = f"{_RAW_PREFIX}/{job_id}.pdf"
 
     pdf_bytes = await file.read()
+
+    # Defensive: Content-Length can be forged or absent; verify actual body size.
+    if len(pdf_bytes) > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Uploaded file exceeds maximum of {settings.max_upload_bytes} bytes"
+            ),
+        )
 
     try:
         storage = StorageClient()

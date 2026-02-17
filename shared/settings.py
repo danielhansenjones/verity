@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Unset disables auth with a startup warning; production deploys must set it.
     contract_api_key: Optional[str] = None
 
+    # Cap on the raw HTTP body of POST /jobs. 25 MiB default.
+    max_upload_bytes: int = 26_214_400
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
