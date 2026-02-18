@@ -82,6 +82,10 @@ If `CONTRACT_API_KEY` is unset, auth is disabled and a warning is logged at star
 
 `POST /jobs` caps the raw request body at `MAX_UPLOAD_BYTES` (default 25 MiB). Oversized uploads are rejected early by middleware with `413 Payload Too Large` before any body is parsed or written to MinIO. Requests without a `Content-Length` header are rejected with `411 Length Required`. A defensive second check on actual bytes catches forged headers.
 
+## Rate limits
+
+Per-IP via slowapi. `POST /jobs` is capped at `RATE_LIMIT_SUBMIT` (default 30/minute); read endpoints (`GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/report`) share `RATE_LIMIT_READ` (default 120/minute). `GET /health` is exempt. Breach returns `429 Too Many Requests` with a `Retry-After` header. Per-subject limits are queued for once JWT auth lands.
+
 ## Pipeline
 
 Processing runs in four sequential stages. On retry, the worker resumes from the last successful stage - a transient failure during scoring does not re-run ingestion.

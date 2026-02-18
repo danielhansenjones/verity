@@ -9,9 +9,12 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.responses import JSONResponse
 from minio.error import S3Error
 from pydantic import BaseModel
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
 from api.auth import require_api_key
+from api.rate_limit import limiter, read_limit, submit_limit
 from shared.minio_client import StorageClient
 from shared.models import Job, JobStage, JobStatus, RiskResult, get_session, init_db
 from shared.redis_queue import JobQueue
@@ -29,6 +32,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Contract Risk Pipeline", lifespan=lifespan)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+        headers={"Retry-After": "60"},
+    )
+
+
+app.add_middleware(SlowAPIMiddleware)
 
 
 @app.middleware("http")
@@ -124,7 +140,8 @@ def health():
     status_code=201,
     dependencies=[Depends(require_api_key)],
 )
-async def submit_job(file: UploadFile = File(...)):
+@limiter.limit(submit_limit)
+async def submit_job(request: Request, file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
@@ -183,7 +200,8 @@ async def submit_job(file: UploadFile = File(...)):
     response_model=list[JobListItem],
     dependencies=[Depends(require_api_key)],
 )
-def list_jobs(status: Optional[str] = Query(default=None)):
+@limiter.limit(read_limit)
+def list_jobs(request: Request, status: Optional[str] = Query(default=None)):
     db = get_session()
     try:
         q = db.query(Job).order_by(Job.created_at.desc())
@@ -213,7 +231,8 @@ def list_jobs(status: Optional[str] = Query(default=None)):
     response_model=JobStatusResponse,
     dependencies=[Depends(require_api_key)],
 )
-def get_job(job_id: str):
+@limiter.limit(read_limit)
+def get_job(request: Request, job_id: str):
     db = get_session()
     try:
         job = db.get(Job, job_id)
@@ -237,7 +256,8 @@ def get_job(job_id: str):
     response_model=ReportResponse,
     dependencies=[Depends(require_api_key)],
 )
-def get_report(job_id: str):
+@limiter.limit(read_limit)
+def get_report(request: Request, job_id: str):
     db = get_session()
     try:
         job = db.get(Job, job_id)
