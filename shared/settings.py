@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Cap on the raw HTTP body of POST /jobs. 25 MiB default.
     max_upload_bytes: int = 26_214_400
 
+    # Per-IP rate limits. slowapi syntax: "<count>/<period>".
+    rate_limit_submit: str = "30/minute"
+    rate_limit_read: str = "120/minute"
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

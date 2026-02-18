@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.11.0",
     "pydantic-settings>=2.8.0",
     "python-multipart>=0.0.20",
+    "slowapi>=0.1.9",
 ]
 
 [dependency-groups]
