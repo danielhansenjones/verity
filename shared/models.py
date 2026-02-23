@@ -96,6 +96,18 @@ class Chunk(Base):
     job: Mapped[Job] = relationship("Job", back_populates="chunks")
 
 
+class JobDedup(Base):
+    """Maps an idempotency key to a Job so duplicate submissions return the same id."""
+
+    __tablename__ = "job_dedup"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("jobs.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class RiskResult(Base):
     __tablename__ = "risk_results"
 

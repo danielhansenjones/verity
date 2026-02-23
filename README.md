@@ -86,6 +86,23 @@ If `CONTRACT_API_KEY` is unset, auth is disabled and a warning is logged at star
 
 Per-IP via slowapi. `POST /jobs` is capped at `RATE_LIMIT_SUBMIT` (default 30/minute); read endpoints (`GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/report`) share `RATE_LIMIT_READ` (default 120/minute). `GET /health` is exempt. Breach returns `429 Too Many Requests` with a `Retry-After` header. Per-subject limits are queued for once JWT auth lands.
 
+## Idempotency
+
+Duplicate submissions to `POST /jobs` return the existing job rather than creating a new one.
+
+- Clients may supply an `Idempotency-Key` header to control the dedup bucket.
+- If the header is absent, the fallback key is `SHA-256` of the PDF body.
+- Keys are namespaced (`client:*` vs `content:*`) so a client key that happens to match a content hash cannot collide.
+- Replays return `200 OK` (not `201`) with an `Idempotent-Replay: true` header and the current state of the existing job.
+- Concurrent first-time submissions with the same key are resolved at the database layer via a unique constraint; the losing request returns the winner's job id.
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -H "X-API-Key: $CONTRACT_API_KEY" \
+  -H "Idempotency-Key: order-12345" \
+  -F "file=@contract.pdf"
+```
+
 ## Pipeline
 
 Processing runs in four sequential stages. On retry, the worker resumes from the last successful stage - a transient failure during scoring does not re-run ingestion.
