@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -5,18 +6,37 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 from minio.error import S3Error
 from pydantic import BaseModel
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from api.auth import require_api_key
 from api.rate_limit import limiter, read_limit, submit_limit
 from shared.minio_client import StorageClient
-from shared.models import Job, JobStage, JobStatus, RiskResult, get_session, init_db
+from shared.models import (
+    Job,
+    JobDedup,
+    JobStage,
+    JobStatus,
+    RiskResult,
+    get_session,
+    init_db,
+)
 from shared.redis_queue import JobQueue
 from shared.settings import settings
 
@@ -134,6 +154,13 @@ def health():
     }
 
 
+def _dedup_key(client_key: Optional[str], pdf_bytes: bytes) -> str:
+    # Namespaced so a 64-hex client key cannot collide with a content hash.
+    if client_key:
+        return f"client:{client_key}"
+    return f"content:{hashlib.sha256(pdf_bytes).hexdigest()}"
+
+
 @app.post(
     "/jobs",
     response_model=JobCreatedResponse,
@@ -141,12 +168,14 @@ def health():
     dependencies=[Depends(require_api_key)],
 )
 @limiter.limit(submit_limit)
-async def submit_job(request: Request, file: UploadFile = File(...)):
+async def submit_job(
+    request: Request,
+    response: Response,
+    file: UploadFile = File(...),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
-
-    job_id = str(uuid.uuid4())
-    object_key = f"{_RAW_PREFIX}/{job_id}.pdf"
 
     pdf_bytes = await file.read()
 
@@ -158,6 +187,26 @@ async def submit_job(request: Request, file: UploadFile = File(...)):
                 f"Uploaded file exceeds maximum of {settings.max_upload_bytes} bytes"
             ),
         )
+
+    dedup_key = _dedup_key(idempotency_key, pdf_bytes)
+
+    # Fast path: existing dedup row short-circuits before any storage or queue work.
+    db = get_session()
+    try:
+        existing = db.query(JobDedup).filter(JobDedup.key == dedup_key).first()
+        if existing is not None:
+            job = db.get(Job, existing.job_id)
+            if job is not None:
+                response.status_code = 200
+                response.headers["Idempotent-Replay"] = "true"
+                return JobCreatedResponse(
+                    job_id=job.id, status=job.status, filename=job.filename
+                )
+    finally:
+        db.close()
+
+    job_id = str(uuid.uuid4())
+    object_key = f"{_RAW_PREFIX}/{job_id}.pdf"
 
     try:
         storage = StorageClient()
@@ -178,7 +227,28 @@ async def submit_job(request: Request, file: UploadFile = File(...)):
             updated_at=datetime.now(timezone.utc),
         )
         db.add(job)
-        db.commit()
+        db.add(JobDedup(key=dedup_key, job_id=job_id))
+        try:
+            db.commit()
+        except IntegrityError:
+            # Concurrent submission won the dedup race; return the winner.
+            db.rollback()
+            existing = db.query(JobDedup).filter(JobDedup.key == dedup_key).first()
+            if existing is not None:
+                winner = db.get(Job, existing.job_id)
+                if winner is not None:
+                    logger.info(
+                        "api: idempotency race; returning winner job_id=%s",
+                        winner.id,
+                    )
+                    response.status_code = 200
+                    response.headers["Idempotent-Replay"] = "true"
+                    return JobCreatedResponse(
+                        job_id=winner.id,
+                        status=winner.status,
+                        filename=winner.filename,
+                    )
+            raise
     finally:
         db.close()
 

@@ -28,6 +28,23 @@ from shared.models import Base, Chunk, Job, JobStage, JobStatus
 TEST_DOCUMENTS_DIR = Path(__file__).parent / "test_documents"
 
 
+def reset_api_tables(SessionLocal):
+    """Clear tables that accumulate across tests sharing the session-scoped engine.
+
+    JobDedup makes identical PDF bodies from different tests collide. Callers that
+    submit via the API need a clean slate per test to keep assertions stable.
+    """
+    # Late import avoids a circular import at module load.
+    from shared.models import JobDedup, RiskResult
+
+    with SessionLocal() as session:
+        session.query(JobDedup).delete()
+        session.query(RiskResult).delete()
+        session.query(Chunk).delete()
+        session.query(Job).delete()
+        session.commit()
+
+
 @pytest.fixture(scope="session")
 def sqlite_engine():
     engine = create_engine(

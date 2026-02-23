@@ -12,11 +12,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from shared.models import Job, JobStage, JobStatus, RiskResult
+from tests.conftest import reset_api_tables
 
 
 @pytest.fixture
 def api_env(sqlite_engine):
     SessionLocal = sessionmaker(bind=sqlite_engine)
+    reset_api_tables(SessionLocal)
 
     mock_storage = MagicMock()
     mock_storage.upload_bytes.return_value = "contracts/raw/test.pdf"
@@ -31,16 +33,19 @@ def api_env(sqlite_engine):
         patch("api.main.JobQueue", return_value=mock_queue),
     ):
         from api.main import app
+        from api.rate_limit import limiter
+
+        limiter.reset()
 
         with TestClient(app, raise_server_exceptions=True) as client:
             yield client, mock_storage, mock_queue
 
 
-def _minimal_pdf() -> bytes:
+def _minimal_pdf(body: str = "Test contract clause.") -> bytes:
     """Minimal but valid PDF so the endpoint does not reject the upload."""
     from tests.seed import _make_pdf_bytes
 
-    return _make_pdf_bytes("Test contract clause.")
+    return _make_pdf_bytes(body)
 
 
 def test_submit_job_returns_201_with_job_id(api_env):
@@ -117,8 +122,12 @@ def test_list_jobs_returns_list(api_env):
 
 def test_list_jobs_includes_submitted_job(api_env):
     client, _, _ = api_env
-    client.post("/jobs", files={"file": ("a.pdf", _minimal_pdf(), "application/pdf")})
-    client.post("/jobs", files={"file": ("b.pdf", _minimal_pdf(), "application/pdf")})
+    client.post(
+        "/jobs", files={"file": ("a.pdf", _minimal_pdf("one"), "application/pdf")}
+    )
+    client.post(
+        "/jobs", files={"file": ("b.pdf", _minimal_pdf("two"), "application/pdf")}
+    )
 
     resp = client.get("/jobs")
     assert len(resp.json()) >= 2
