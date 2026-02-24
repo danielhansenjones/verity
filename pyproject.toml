@@ -16,6 +16,7 @@ dependencies = [
     "pydantic-settings>=2.8.0",
     "python-multipart>=0.0.20",
     "slowapi>=0.1.9",
+    "prometheus-client>=0.22.0",
 ]
 
 [dependency-groups]

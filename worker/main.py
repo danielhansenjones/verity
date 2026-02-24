@@ -3,11 +3,19 @@ import sys
 import time
 
 import torch
+from prometheus_client import start_http_server
 from transformers import pipeline as hf_pipeline
 
+from shared.metrics import (
+    job_stage_duration_seconds,
+    job_stage_errors_total,
+    jobs_completed_total,
+    queue_depth,
+)
 from shared.minio_client import StorageClient
 from shared.models import Chunk, Job, JobStage, JobStatus, init_db, get_session
 from shared.redis_queue import JobQueue
+from shared.settings import settings
 from worker.processors import assembler, classifier, ingestion, scorer
 
 logging.basicConfig(
@@ -21,6 +29,9 @@ logger = logging.getLogger(__name__)
 def main():
     logger.info("worker: initialising database")
     init_db()
+
+    start_http_server(settings.worker_metrics_port)
+    logger.info("worker: metrics server on port %d", settings.worker_metrics_port)
 
     device = 0 if torch.cuda.is_available() else -1
     logger.info("worker: using device=%s (%s)", device, "GPU" if device == 0 else "CPU")
@@ -48,6 +59,12 @@ def main():
 
     while True:
         try:
+            queue_depth.set(queue.depth())
+        except Exception:
+            # Depth sampling is best-effort; do not block job processing on it.
+            logger.debug("worker: queue depth sample failed", exc_info=True)
+
+        try:
             job_id = queue.dequeue(timeout=5)
         except Exception:
             logger.exception("worker: failed to dequeue from Redis, retrying in 5s")
@@ -69,28 +86,38 @@ def main():
 
             try:
                 if job.stage == JobStage.INGESTION:
-                    ingestion.run(job, db, storage)
+                    with job_stage_duration_seconds.labels(stage="ingestion").time():
+                        ingestion.run(job, db, storage)
 
                 if job.stage == JobStage.CLASSIFICATION:
-                    classifier.run(job, db, classifier_pipeline)
+                    with job_stage_duration_seconds.labels(
+                        stage="classification"
+                    ).time():
+                        classifier.run(job, db, classifier_pipeline)
 
                 if job.stage == JobStage.SCORING:
-                    scored = scorer.run(job, db, tone_pipeline)
+                    with job_stage_duration_seconds.labels(stage="scoring").time():
+                        scored = scorer.run(job, db, tone_pipeline)
                 else:
                     scored = None
 
                 if job.stage == JobStage.ASSEMBLY:
-                    if scored is None:
-                        chunks = (
-                            db.query(Chunk)
-                            .filter(Chunk.job_id == job.id)
-                            .order_by(Chunk.index)
-                            .all()
-                        )
-                        scored = scorer.score_chunks(chunks, tone_pipeline)
-                    assembler.run(job, db, storage, scored)
+                    with job_stage_duration_seconds.labels(stage="assembly").time():
+                        if scored is None:
+                            chunks = (
+                                db.query(Chunk)
+                                .filter(Chunk.job_id == job.id)
+                                .order_by(Chunk.index)
+                                .all()
+                            )
+                            scored = scorer.score_chunks(chunks, tone_pipeline)
+                        assembler.run(job, db, storage, scored)
+
+                if job.status == JobStatus.COMPLETED:
+                    jobs_completed_total.labels(status="completed").inc()
 
             except Exception as exc:
+                job_stage_errors_total.labels(stage=str(job.stage)).inc()
                 logger.exception("worker: job %s failed at stage %s", job_id, job.stage)
                 job.error = str(exc)
                 if job.retry_count < job.max_retries:
@@ -105,6 +132,7 @@ def main():
                     )
                 else:
                     job.status = JobStatus.FAILED
+                    jobs_completed_total.labels(status="failed").inc()
                     logger.error(
                         "worker: job %s exhausted retries, marked failed", job_id
                     )

@@ -39,3 +39,6 @@ class JobQueue:
             return None
         _, job_id = raw
         return job_id.decode() if isinstance(job_id, bytes) else str(job_id)
+
+    def depth(self) -> int:
+        return cast(int, cast(object, self._client.llen(self._key)))

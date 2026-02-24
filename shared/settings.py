@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     rate_limit_submit: str = "30/minute"
     rate_limit_read: str = "120/minute"
 
+    # Port for the worker's /metrics HTTP server. API metrics ride on the API port.
+    worker_metrics_port: int = 9100
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
