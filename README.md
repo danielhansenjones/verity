@@ -67,6 +67,7 @@ docker compose exec api python tests/seed.py
 | GET    | `/jobs/{job_id}/report` | Risk result + presigned MinIO URL for full report |
 | GET    | `/jobs`                 | List recent jobs, optional `?status=` filter      |
 | GET    | `/health`               | Postgres and Redis connectivity check             |
+| GET    | `/metrics`              | Prometheus exposition (public, unauthenticated)   |
 
 ## Auth
 
@@ -102,6 +103,25 @@ curl -X POST http://localhost:8000/jobs \
   -H "Idempotency-Key: order-12345" \
   -F "file=@contract.pdf"
 ```
+
+## Metrics
+
+Prometheus exposition on two scrape targets:
+
+| Target | Endpoint                        |
+|--------|---------------------------------|
+| API    | `http://api:8000/metrics`       |
+| Worker | `http://worker:WORKER_METRICS_PORT/metrics` (default port 9100) |
+
+Exposed series:
+
+| Metric                          | Type      | Labels             |
+|---------------------------------|-----------|--------------------|
+| `jobs_submitted_total`          | counter   | `outcome` (`created`, `replayed`) |
+| `jobs_completed_total`          | counter   | `status` (`completed`, `failed`)  |
+| `job_stage_duration_seconds`    | histogram | `stage`            |
+| `job_stage_errors_total`        | counter   | `stage`            |
+| `queue_depth`                   | gauge     | -                  |
 
 ## Pipeline
 

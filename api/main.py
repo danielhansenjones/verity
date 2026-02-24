@@ -17,8 +17,9 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response as FastAPIResponse
 from minio.error import S3Error
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -27,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from api.auth import require_api_key
 from api.rate_limit import limiter, read_limit, submit_limit
+from shared.metrics import jobs_submitted_total
 from shared.minio_client import StorageClient
 from shared.models import (
     Job,
@@ -129,6 +131,11 @@ class JobListItem(BaseModel):
     created_at: datetime
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    return FastAPIResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/health")
 def health():
     db = get_session()
@@ -197,6 +204,7 @@ async def submit_job(
         if existing is not None:
             job = db.get(Job, existing.job_id)
             if job is not None:
+                jobs_submitted_total.labels(outcome="replayed").inc()
                 response.status_code = 200
                 response.headers["Idempotent-Replay"] = "true"
                 return JobCreatedResponse(
@@ -241,6 +249,7 @@ async def submit_job(
                         "api: idempotency race; returning winner job_id=%s",
                         winner.id,
                     )
+                    jobs_submitted_total.labels(outcome="replayed").inc()
                     response.status_code = 200
                     response.headers["Idempotent-Replay"] = "true"
                     return JobCreatedResponse(
@@ -259,6 +268,7 @@ async def submit_job(
         logger.error("api: failed to enqueue job %s: %s", job_id, exc)
         raise HTTPException(status_code=503, detail="Queue service unavailable")
 
+    jobs_submitted_total.labels(outcome="created").inc()
     logger.info("api: job submitted job_id=%s filename=%s", job_id, file.filename)
     return JobCreatedResponse(
         job_id=job_id, status=JobStatus.QUEUED, filename=file.filename
