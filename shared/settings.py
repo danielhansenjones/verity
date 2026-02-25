@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     minio_root_password: str = "minioadmin"
     minio_bucket: str = "contracts"
 
+    # Redis Streams: the stream key, consumer group name, and reclaim threshold.
+    # Entries idle for longer than this on a dead consumer are reclaimed via XAUTOCLAIM.
     job_queue_key: str = "contract_jobs"
+    job_queue_group: str = "workers"
+    job_queue_idle_ms: int = 60_000
 
     # Unset disables auth with a startup warning; production deploys must set it.
     contract_api_key: Optional[str] = None
