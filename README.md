@@ -11,7 +11,7 @@ Built to demonstrate: distributed job processing, ML inference in production, fa
 | Layer     | Technology               | Purpose                         |
 |-----------|--------------------------|---------------------------------|
 | API       | FastAPI                  | Job submission, status, results |
-| Queue     | Redis (BRPOP/LPUSH)      | FIFO job dispatch, no busy-wait |
+| Queue     | Redis Streams + consumer group | At-least-once dispatch with crash recovery |
 | Worker    | Python process           | Pipeline execution              |
 | Database  | PostgreSQL + SQLAlchemy  | Job state, chunks, results      |
 | Storage   | MinIO (S3-compatible)    | Raw PDFs, report artifacts      |
@@ -159,8 +159,8 @@ Four tiers are deliberately separated: API, queue, worker, storage. Each scales,
 ### Scaling axes
 
 - **API tier**: stateless. Horizontal scale behind a load balancer. No in-process queue, no session state. Idempotency makes retried submissions safe (see `docs/DESIGN.md` section 3).
-- **Worker tier**: one consumer per job via atomic Redis dequeue. Add workers to raise throughput: `docker compose up --scale worker=N`. The worker loop and queue semantics are already correct for concurrent consumers.
-- **Queue**: Redis. BRPOP today; migration to Redis Streams with consumer groups is queued so crashed workers have their in-flight jobs reclaimed rather than lost.
+- **Worker tier**: one consumer per job via Redis Streams consumer group (`XREADGROUP`). Add workers to raise throughput: `docker compose up --scale worker=N`. Each worker's consumer name is `hostname:pid`, so `XAUTOCLAIM` can distinguish live and dead consumers.
+- **Queue**: Redis Streams. Entries stay in the pending list until a consumer calls `XACK`. If a worker crashes mid-job, `XAUTOCLAIM` hands the entry to a healthy consumer after `JOB_QUEUE_IDLE_MS` of idleness; no job is lost.
 - **State**: Postgres. Write throughput is not the bottleneck at realistic ML inference rates, so a single primary is fine. Read replicas are the scale-out path for dashboards and audits.
 - **Blobs**: MinIO. S3-compatible so production can swap to S3/GCS without code changes.
 
@@ -227,7 +227,7 @@ contract-risk-pipeline/
 ├── shared/
 │   ├── settings.py                # Pydantic settings - single env var source
 │   ├── models.py                  # SQLAlchemy: Job, Chunk, RiskResult
-│   ├── redis_queue.py             # Queue wrapper (LPUSH enqueue, BRPOP dequeue)
+│   ├── redis_queue.py             # Redis Streams queue wrapper (XREADGROUP / XACK / XAUTOCLAIM)
 │   └── minio_client.py            # MinIO wrapper (upload, download, presigned URL)
 ├── api/
 │   └── main.py                    # FastAPI routes
@@ -254,11 +254,12 @@ contract-risk-pipeline/
 
 - Worker retries up to `max_retries` (default 3) before marking a job `failed`
 - `job.stage` is preserved on failure - retry resumes from the last completed stage
+- Redis Streams + consumer group: entries stay in the pending-entries list until `XACK`. If a worker crashes between dequeue and ack, `XAUTOCLAIM` reclaims the entry for another consumer after `JOB_QUEUE_IDLE_MS` (default 60s). No in-flight job is silently lost.
 - Postgres is the source of truth for all states; Redis holds only the queue.
 
 ## Design Decisions
 
-**Redis for the queue** - BRPOP gives atomic, blocking dequeue with no busy-wait. No two workers can pop the same job. Scale horizontally by adding worker containers.
+**Redis Streams for the queue** - Consumer-group semantics give at-least-once delivery. `XREADGROUP` claims an entry, the worker acks on success, and `XAUTOCLAIM` reclaims abandoned entries from dead consumers after an idle threshold. Scale horizontally by adding worker containers; each gets a unique consumer name (`hostname:pid`) so reclaim logic can tell live and dead consumers apart.
 
 **Stage checkpoints** - Prevents redundant reprocessing on transient failures. A network blip during scoring shouldn't re-extract and re-classify a 100-page document.
 

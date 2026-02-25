@@ -65,14 +65,20 @@ def main():
             logger.debug("worker: queue depth sample failed", exc_info=True)
 
         try:
-            job_id = queue.dequeue(timeout=5)
+            inflight = queue.dequeue(timeout=5)
         except Exception:
             logger.exception("worker: failed to dequeue from Redis, retrying in 5s")
             time.sleep(5)
             continue
 
-        if job_id is None:
+        if inflight is None:
             continue
+
+        job_id = inflight.job_id
+        entry_id = inflight.entry_id
+        # Track whether we can safely ack this entry; set False if the crash
+        # path should leave it in PEL for another consumer to reclaim.
+        should_ack = True
 
         db = get_session()
         try:
@@ -123,6 +129,9 @@ def main():
                 if job.retry_count < job.max_retries:
                     job.status = JobStatus.RETRYING
                     job.retry_count += 1
+                    # Ack the current entry and enqueue a fresh one; the new
+                    # entry resets the idle timer, so transient reclaim storms
+                    # cannot double-process retries.
                     queue.enqueue(job_id)
                     logger.info(
                         "worker: job %s re-queued (attempt %d/%d)",
@@ -137,8 +146,21 @@ def main():
                         "worker: job %s exhausted retries, marked failed", job_id
                     )
                 db.commit()
+        except Exception:
+            # Unexpected error outside the stage handlers (db commit, etc).
+            # Leave the entry unacked so XAUTOCLAIM can hand it off.
+            should_ack = False
+            logger.exception("worker: unexpected error handling job %s", job_id)
         finally:
             db.close()
+            if should_ack:
+                try:
+                    queue.ack(entry_id)
+                except Exception:
+                    logger.exception(
+                        "worker: failed to ack entry %s; entry will be reclaimed",
+                        entry_id,
+                    )
 
 
 if __name__ == "__main__":
