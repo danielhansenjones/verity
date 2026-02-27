@@ -97,21 +97,40 @@ def test_clause_summary_counts_each_type(make_job, db_session, mock_storage):
     assert result.clause_summary["governing law"] == 1
 
 
+def _hit(rule_id: str, severity: str, reason: str, text: str, matched: str) -> dict:
+    """Build a risk hit matching the new scorer output shape (post-spaCy migration)."""
+    start = text.lower().find(matched.lower())
+    assert start >= 0, f"matched text {matched!r} not in source text"
+    return {
+        "id": rule_id,
+        "severity": severity,
+        "reason": reason,
+        "matched_text": matched,
+        "start": start,
+        "end": start + len(matched),
+    }
+
+
 def test_flags_are_collected_from_chunks(make_job, db_session, mock_storage):
     job = make_job(stage=JobStage.ASSEMBLY)
+    text = (
+        "The licensee shall indemnify and hold harmless the provider against claims."
+    )
     scored = [
         _scored_chunk(
             0,
             "indemnification",
             75.0,
             flags=[
-                {
-                    "pattern": "indemnify and hold harmless",
-                    "severity": "high",
-                    "reason": "Broad indemnification",
-                }
+                _hit(
+                    "broad_indemnification",
+                    "high",
+                    "Broad indemnification",
+                    text,
+                    "indemnify and hold harmless",
+                )
             ],
-            text="The licensee shall indemnify and hold harmless the provider against claims.",
+            text=text,
         ),
     ]
     run(job, db_session, mock_storage, scored)
@@ -119,7 +138,8 @@ def test_flags_are_collected_from_chunks(make_job, db_session, mock_storage):
     result = db_session.query(RiskResult).filter(RiskResult.job_id == job.id).first()
     assert len(result.flags) == 1
     flag = result.flags[0]
-    assert flag["matched_pattern"] == "indemnify and hold harmless"
+    assert flag["rule_id"] == "broad_indemnification"
+    assert flag["matched_text"] == "indemnify and hold harmless"
     assert flag["severity"] == "high"
     assert flag["chunk_index"] == 0
     assert flag["clause_type"] == "indemnification"
@@ -127,18 +147,23 @@ def test_flags_are_collected_from_chunks(make_job, db_session, mock_storage):
 
 def test_flag_excerpt_contains_matched_pattern(make_job, db_session, mock_storage):
     job = make_job(stage=JobStage.ASSEMBLY)
-    text = "Both parties agree that automatic renewal applies unless written notice is given."
+    text = (
+        "Both parties agree that automatic renewal applies unless written notice "
+        "is given."
+    )
     scored = [
         _scored_chunk(
             0,
             "termination",
             45.0,
             flags=[
-                {
-                    "pattern": "automatic renewal",
-                    "severity": "medium",
-                    "reason": "Contract auto-renews",
-                }
+                _hit(
+                    "automatic_renewal",
+                    "medium",
+                    "Contract auto-renews",
+                    text,
+                    "automatic renewal",
+                )
             ],
             text=text,
         ),
@@ -154,29 +179,39 @@ def test_chunk_with_multiple_flags_generates_multiple_flag_rows(
     make_job, db_session, mock_storage
 ):
     job = make_job(stage=JobStage.ASSEMBLY)
+    text = (
+        "At sole discretion, they shall indemnify and hold harmless, terminate "
+        "without cause."
+    )
     scored = [
         _scored_chunk(
             0,
             "indemnification",
             90.0,
             flags=[
-                {
-                    "pattern": "sole discretion",
-                    "severity": "high",
-                    "reason": "Unilateral right",
-                },
-                {
-                    "pattern": "indemnify and hold harmless",
-                    "severity": "high",
-                    "reason": "Broad indemnification",
-                },
-                {
-                    "pattern": "without cause",
-                    "severity": "medium",
-                    "reason": "Termination without cause",
-                },
+                _hit(
+                    "unilateral_discretion",
+                    "high",
+                    "Unilateral right",
+                    text,
+                    "sole discretion",
+                ),
+                _hit(
+                    "broad_indemnification",
+                    "high",
+                    "Broad indemnification",
+                    text,
+                    "indemnify and hold harmless",
+                ),
+                _hit(
+                    "termination_without_cause",
+                    "medium",
+                    "Termination without cause",
+                    text,
+                    "without cause",
+                ),
             ],
-            text="At sole discretion, they shall indemnify and hold harmless, terminate without cause.",
+            text=text,
         ),
     ]
     run(job, db_session, mock_storage, scored)

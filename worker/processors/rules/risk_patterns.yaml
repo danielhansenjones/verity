@@ -1,0 +1,113 @@
+# Risk pattern rules. Each rule compiles to a spaCy Matcher pattern.
+#
+# Fields:
+#   id         - stable identifier used in reports and metrics.
+#   severity   - high | medium | low; maps to the scorer's severity weight.
+#   reason     - human-readable rationale shown in reports.
+#   patterns   - list of spaCy Matcher pattern lists. Each inner list is one
+#                alternative; a rule fires on any alternative matching.
+#
+# Patterns use LOWER-based token matching so we stay independent of a trained
+# spaCy model. OP: "?" marks optional slots, so "sole discretion" and
+# "sole and absolute discretion" fire the same rule.
+
+- id: unilateral_discretion
+  severity: high
+  reason: Unilateral decision right
+  patterns:
+    - - LOWER: sole
+      - LOWER: {IN: ["and", ","]}
+        OP: "?"
+      - LOWER: {IN: [absolute, exclusive, unfettered]}
+        OP: "?"
+      - LOWER: discretion
+    - - LOWER: sole
+      - LOWER: discretionary
+      - LOWER: authority
+
+- id: unlimited_liability
+  severity: high
+  reason: Uncapped liability exposure
+  patterns:
+    - - LOWER: unlimited
+      - LOWER: liability
+    - - LOWER: without
+      - LOWER: limitation
+      - LOWER: of
+        OP: "?"
+      - LOWER: liability
+
+- id: perpetual_irrevocable
+  severity: high
+  reason: Cannot be terminated or reversed
+  patterns:
+    - - LOWER: perpetual
+      - LOWER: and
+      - LOWER: irrevocable
+    - - LOWER: irrevocable
+      - LOWER: and
+      - LOWER: perpetual
+
+- id: broad_indemnification
+  severity: high
+  reason: Broad indemnification obligation
+  patterns:
+    - - LOWER: indemnify
+      - LOWER: and
+      - LOWER: hold
+      - LOWER: harmless
+    - - LOWER: defend
+      - LOWER: ","
+        OP: "?"
+      - LOWER: indemnify
+      - LOWER: {IN: [and, ","]}
+        OP: "?"
+      - LOWER: {IN: [hold, save]}
+        OP: "?"
+      - LOWER: harmless
+
+- id: termination_without_cause
+  severity: medium
+  reason: Termination without cause permitted
+  patterns:
+    - - LOWER: without
+      - LOWER: cause
+    - - LOWER: for
+      - LOWER: any
+      - LOWER: reason
+      - LOWER: or
+      - LOWER: "no"
+      - LOWER: reason
+
+- id: automatic_renewal
+  severity: medium
+  reason: Contract auto-renews without action
+  patterns:
+    - - LOWER: automatic
+      - LOWER: renewal
+    - - LOWER: automatically
+      - LOWER: {IN: [renew, renews, renewed]}
+
+- id: liquidated_damages
+  severity: medium
+  reason: Pre-set damages clause
+  patterns:
+    - - LOWER: liquidated
+      - LOWER: damages
+
+- id: best_efforts
+  severity: low
+  reason: Ambiguous obligation standard
+  patterns:
+    - - LOWER: best
+      - LOWER: efforts
+    - - LOWER: commercially
+      - LOWER: reasonable
+      - LOWER: efforts
+
+- id: reasonable_notice
+  severity: low
+  reason: Undefined notice period
+  patterns:
+    - - LOWER: reasonable
+      - LOWER: notice

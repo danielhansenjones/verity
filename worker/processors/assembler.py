@@ -42,17 +42,18 @@ def run(
     for chunk in scored_chunks:
         for hit in chunk["flags"]:
             text = chunk["text"]
-            lower = text.lower()
-            pos = lower.find(hit["pattern"])
-            start = max(0, pos - 40)
-            end = min(len(text), pos + len(hit["pattern"]) + 40)
-            excerpt = "..." + text[start:end] + "..."
+            hit_start = hit["start"]
+            hit_end = hit["end"]
+            excerpt_start = max(0, hit_start - 40)
+            excerpt_end = min(len(text), hit_end + 40)
+            excerpt = "..." + text[excerpt_start:excerpt_end] + "..."
 
             flags.append(
                 {
                     "chunk_index": chunk["index"],
                     "clause_type": chunk["clause_type"],
-                    "matched_pattern": hit["pattern"],
+                    "rule_id": hit["id"],
+                    "matched_text": hit["matched_text"],
                     "reason": hit["reason"],
                     "severity": hit["severity"],
                     "excerpt": excerpt,

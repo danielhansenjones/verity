@@ -5,20 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.models import Chunk, Job, JobStage
+from worker.processors.risk_rules import default_matcher
 
 logger = logging.getLogger(__name__)
-
-RISK_PATTERNS = [
-    ("sole discretion", "high", "Unilateral decision right"),
-    ("unlimited liability", "high", "Uncapped liability exposure"),
-    ("perpetual and irrevocable", "high", "Cannot be terminated or reversed"),
-    ("indemnify and hold harmless", "high", "Broad indemnification obligation"),
-    ("without cause", "medium", "Termination without cause permitted"),
-    ("automatic renewal", "medium", "Contract auto-renews without action"),
-    ("liquidated damages", "medium", "Pre-set damages clause"),
-    ("best efforts", "low", "Ambiguous obligation standard"),
-    ("reasonable notice", "low", "Undefined notice period"),
-]
 
 CLAUSE_WEIGHTS = {
     "indemnification": 1.0,
@@ -39,12 +28,18 @@ _BATCH_SIZE = 8
 
 
 def _apply_risk_patterns(text: str) -> list[dict]:
-    lower = text.lower()
-    hits = []
-    for pattern, severity, reason in RISK_PATTERNS:
-        if pattern in lower:
-            hits.append({"pattern": pattern, "severity": severity, "reason": reason})
-    return hits
+    """Return risk hits with rule id, severity, and the exact matched span."""
+    return [
+        {
+            "id": hit.id,
+            "severity": hit.severity,
+            "reason": hit.reason,
+            "matched_text": hit.matched_text,
+            "start": hit.start,
+            "end": hit.end,
+        }
+        for hit in default_matcher().match(text)
+    ]
 
 
 def _to_tone_score(result: dict) -> float:
