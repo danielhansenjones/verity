@@ -17,6 +17,8 @@ dependencies = [
     "python-multipart>=0.0.20",
     "slowapi>=0.1.9",
     "prometheus-client>=0.22.0",
+    "spacy>=3.8.0",
+    "pyyaml>=6.0.0",
 ]
 
 [dependency-groups]

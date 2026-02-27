@@ -140,7 +140,7 @@ Runs `facebook/bart-large-mnli` zero-shot classification against 10 clause label
 ### Stage 3 - Scoring
 Two-pass scoring per chunk:
 - **Tone model** (`distilbert-base-uncased-finetuned-sst-2-english`): negative sentiment raises risk signal.
-- **Rule-based flags**: regex/keyword patterns for high-confidence, explainable risks (e.g. `"sole discretion"` → high, `"automatic renewal"` → medium).
+- **Rule-based flags**: spaCy `Matcher` applied to token sequences declared as YAML in `worker/processors/rules/`. Rules fire on lexical variants ("sole discretion", "sole and absolute discretion", "sole and unfettered discretion" all match one rule) and return exact character offsets so the assembler can quote the matched span in reports. Rule set is data, not code - adding a pattern does not require a Python change. Upgrade path to a trained spaCy model + `DependencyMatcher` is tracked in `docs/DESIGN.md`.
 
 Chunk score formula:
 ```
