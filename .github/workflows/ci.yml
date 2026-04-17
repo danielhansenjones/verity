@@ -28,6 +28,7 @@ jobs:
 
   test:
     name: Tests
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
