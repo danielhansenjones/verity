@@ -1,0 +1,8 @@
+{
+  "_comment": "Maps v1 risk categories to their CUAD equivalents. Categories not listed here have no CUAD equivalent and are tier-1 only.",
+  "termination": ["Termination For Convenience", "Notice Period To Terminate Renewal"],
+  "liability limitation": ["Cap On Liability", "Uncapped Liability"],
+  "intellectual property assignment": ["IP Ownership Assignment", "Joint IP Ownership"],
+  "governing law": ["Governing Law"],
+  "confidentiality": ["Confidentiality"]
+}
