@@ -89,6 +89,10 @@ class Chunk(Base):
     token_count: Mapped[int] = mapped_column(Integer)
     clause_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    extracted_span: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    extracted_span_category: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )

@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # Port for the worker's /metrics HTTP server. API metrics ride on the API port.
     worker_metrics_port: int = 9100
 
+    # Span extractor (v2 cascade). Disabled by default until the model is trained.
+    span_extractor_enabled: bool = False
+    span_extractor_model_path: str = ""
+    span_extractor_tier1_confidence_threshold: float = 0.7
+    span_extractor_timeout_s: float = 30.0
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
