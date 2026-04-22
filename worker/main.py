@@ -17,6 +17,7 @@ from shared.models import Chunk, Job, JobStage, JobStatus, init_db, get_session
 from shared.redis_queue import DeadLetter, JobQueue
 from shared.settings import settings
 from worker.processors import assembler, classifier, ingestion, scorer
+from worker.processors.span_extractor import SpanExtractor
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -47,6 +48,26 @@ def main():
         model="distilbert-base-uncased-finetuned-sst-2-english",
         device=device,
     )
+
+    span_extractor = None
+    if settings.span_extractor_enabled:
+        if not settings.span_extractor_model_path:
+            logger.warning(
+                "worker: SPAN_EXTRACTOR_ENABLED=true but SPAN_EXTRACTOR_MODEL_PATH"
+                " is not set; cascade disabled"
+            )
+        else:
+            logger.info(
+                "worker: loading span extractor from %s",
+                settings.span_extractor_model_path,
+            )
+            span_extractor = SpanExtractor(
+                model_path=settings.span_extractor_model_path,
+                device="cuda" if device == 0 else "cpu",
+            )
+            logger.info("worker: span extractor loaded")
+    else:
+        logger.info("worker: span extractor disabled (SPAN_EXTRACTOR_ENABLED=false)")
 
     queue = JobQueue()
     storage = StorageClient()
@@ -133,7 +154,9 @@ def main():
                     with job_stage_duration_seconds.labels(
                         stage="classification"
                     ).time():
-                        classifier.run(job, db, classifier_pipeline)
+                        classifier.run(
+                            job, db, classifier_pipeline, span_extractor
+                        )
 
                 if job.stage == JobStage.SCORING:
                     log.extra["stage"] = "scoring"
