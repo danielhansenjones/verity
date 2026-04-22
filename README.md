@@ -4,22 +4,31 @@
 
 A production-minded document processing pipeline that ingests contract PDFs, classifies clauses using zero-shot ML, applies rule-based risk flags, scores the document, and exposes results via a REST API.
 
-Built to demonstrate: distributed job processing, ML inference in production, fault-tolerant worker design, and structured artifact storage.
+## Highlights
+
+- **At-least-once queue** on Redis Streams with consumer groups. Crashed workers are reclaimed via `XAUTOCLAIM` after an idle threshold; no in-flight job is lost.
+- **Idempotent `POST /jobs`** with client or content-hash dedup keys. Concurrent first-time submissions resolve at the DB layer via a unique constraint; the loser returns the winner's `job_id` with `Idempotent-Replay: true`.
+- **Stage-checkpointed retries.** A transient failure in scoring does not re-run ingestion or classification. Retry count is durable on the `Job` row.
+- **Hybrid ML + rule scoring.** Zero-shot classification (`facebook/bart-large-mnli`) assigns clause types; a spaCy `Matcher` + YAML rule DSL produces explainable risk flags with exact character offsets.
+- **Timing-safe API key auth** (`hmac.compare_digest`), **pre-parse upload cap** via middleware (411/413 before multipart parsing), and **per-IP rate limits** with `Retry-After`.
+- **Prometheus metrics on both tiers** - API and worker each expose a scrape target. Submissions, completions, stage duration histograms, stage errors, and queue depth.
+- **154 tests** covering API contracts, pipeline stages, queue semantics, auth, rate limits, idempotency, and upload sizing.
+- **Single-command local stack** via Docker Compose (Postgres, Redis, MinIO, API, worker).
 
 ## Stack
 
-| Layer     | Technology               | Purpose                         |
-|-----------|--------------------------|---------------------------------|
-| API       | FastAPI                  | Job submission, status, results |
+| Layer     | Technology                     | Purpose                                    |
+|-----------|--------------------------------|--------------------------------------------|
+| API       | FastAPI                        | Job submission, status, results            |
 | Queue     | Redis Streams + consumer group | At-least-once dispatch with crash recovery |
-| Worker    | Python process           | Pipeline execution              |
-| Database  | PostgreSQL + SQLAlchemy  | Job state, chunks, results      |
-| Storage   | MinIO (S3-compatible)    | Raw PDFs, report artifacts      |
-| ML        | HuggingFace Transformers | Clause classification + scoring |
-| Container | Docker Compose           | Single-command local stack      |
+| Worker    | Python process                 | Pipeline execution                         |
+| Database  | PostgreSQL + SQLAlchemy        | Job state, chunks, results                 |
+| Storage   | MinIO (S3-compatible)          | Raw PDFs, report artifacts                 |
+| ML        | HuggingFace Transformers       | Clause classification + scoring            |
+| Container | Docker Compose                 | Single-command local stack                 |
 
 ## Quick Start
-
+1
 ```bash
 cp .env.example .env
 python scripts/run.py
@@ -85,7 +94,7 @@ If `CONTRACT_API_KEY` is unset, auth is disabled and a warning is logged at star
 
 ## Rate limits
 
-Per-IP via slowapi. `POST /jobs` is capped at `RATE_LIMIT_SUBMIT` (default 30/minute); read endpoints (`GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/report`) share `RATE_LIMIT_READ` (default 120/minute). `GET /health` is exempt. Breach returns `429 Too Many Requests` with a `Retry-After` header. Per-subject limits are queued for once JWT auth lands.
+Per-IP via slowapi. `POST /jobs` is capped at `RATE_LIMIT_SUBMIT` (default 30/minute); read endpoints (`GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/report`) share `RATE_LIMIT_READ` (default 120/minute). `GET /health` is exempt. Breach returns `429 Too Many Requests` with a `Retry-After` header.
 
 ## Idempotency
 
@@ -108,20 +117,20 @@ curl -X POST http://localhost:8000/jobs \
 
 Prometheus exposition on two scrape targets:
 
-| Target | Endpoint                        |
-|--------|---------------------------------|
-| API    | `http://api:8000/metrics`       |
+| Target | Endpoint                                                        |
+|--------|-----------------------------------------------------------------|
+| API    | `http://api:8000/metrics`                                       |
 | Worker | `http://worker:WORKER_METRICS_PORT/metrics` (default port 9100) |
 
 Exposed series:
 
-| Metric                          | Type      | Labels             |
-|---------------------------------|-----------|--------------------|
-| `jobs_submitted_total`          | counter   | `outcome` (`created`, `replayed`) |
-| `jobs_completed_total`          | counter   | `status` (`completed`, `failed`)  |
-| `job_stage_duration_seconds`    | histogram | `stage`            |
-| `job_stage_errors_total`        | counter   | `stage`            |
-| `queue_depth`                   | gauge     | -                  |
+| Metric                       | Type      | Labels                            |
+|------------------------------|-----------|-----------------------------------|
+| `jobs_submitted_total`       | counter   | `outcome` (`created`, `replayed`) |
+| `jobs_completed_total`       | counter   | `status` (`completed`, `failed`)  |
+| `job_stage_duration_seconds` | histogram | `stage`                           |
+| `job_stage_errors_total`     | counter   | `stage`                           |
+| `queue_depth`                | gauge     | -                                 |
 
 ## Pipeline
 
@@ -187,10 +196,10 @@ Multi-tenant isolation, geographic replication, zero-downtime deploys, HA Postgr
 
 Two workflows run on every push and pull request to `main`:
 
-| Workflow       | Jobs                                          |
-|----------------|-----------------------------------------------|
-| `ci.yml`       | Flake8 lint, pytest                  |
-| `docker.yml`   | Docker image build (validates the Dockerfile) |
+| Workflow     | Jobs                                          |
+|--------------|-----------------------------------------------|
+| `ci.yml`     | Flake8 lint, pytest                           |
+| `docker.yml` | Docker image build (validates the Dockerfile) |
 
 ## Pre-commit
 
