@@ -20,9 +20,22 @@ class Settings(BaseSettings):
 
     # Redis Streams: the stream key, consumer group name, and reclaim threshold.
     # Entries idle for longer than this on a dead consumer are reclaimed via XAUTOCLAIM.
+    # Idle threshold must exceed realistic p99 stage duration (zero-shot classification
+    # over many chunks on CPU can run several minutes); otherwise a healthy worker's
+    # in-flight entry gets stolen concurrently.
     job_queue_key: str = "contract_jobs"
     job_queue_group: str = "workers"
-    job_queue_idle_ms: int = 60_000
+    job_queue_idle_ms: int = 600_000
+
+    # Dead-letter stream for entries that have been delivered more than
+    # job_queue_max_deliveries times. Protects against poison-pill jobs that
+    # crash the worker process (OOM, SIGKILL) before app-layer retry logic runs.
+    job_queue_dlq_key: str = "contract_jobs:dlq"
+    job_queue_max_deliveries: int = 5
+
+    # XADD maxlen trim target. XACK removes from PEL but not from the stream;
+    # without trimming the stream grows unbounded.
+    job_queue_maxlen: int = 10_000
 
     # Unset disables auth with a startup warning; production deploys must set it.
     contract_api_key: Optional[str] = None

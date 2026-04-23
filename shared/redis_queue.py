@@ -1,7 +1,7 @@
 import logging
 import os
 import socket
-from typing import NamedTuple, Optional, cast
+from typing import NamedTuple, Optional, Union, cast
 
 import redis
 
@@ -17,6 +17,18 @@ class InFlightJob(NamedTuple):
 
     job_id: str
     entry_id: str
+
+
+class DeadLetter(NamedTuple):
+    """A job that exceeded max_deliveries and was routed to the DLQ stream.
+
+    The queue has already acked the original entry and written to the DLQ; the
+    caller only needs to update DB-side bookkeeping (mark the Job failed).
+    """
+
+    job_id: str
+    entry_id: str
+    times_delivered: int
 
 
 def _default_consumer_name() -> str:
@@ -46,6 +58,9 @@ class JobQueue:
         self._group = settings.job_queue_group
         self._consumer = consumer_name or _default_consumer_name()
         self._idle_ms = settings.job_queue_idle_ms
+        self._dlq_key = settings.job_queue_dlq_key
+        self._max_deliveries = settings.job_queue_max_deliveries
+        self._maxlen = settings.job_queue_maxlen
         self._autoclaim_cursor = "0-0"
         self._group_ready = False
 
@@ -68,7 +83,12 @@ class JobQueue:
     def enqueue(self, job_id: str) -> None:
         self._ensure_group()
         try:
-            self._client.xadd(self._key, {"job_id": job_id})
+            self._client.xadd(
+                self._key,
+                {"job_id": job_id},
+                maxlen=self._maxlen,
+                approximate=True,
+            )
         except redis.ConnectionError as exc:
             logger.error("queue: failed to enqueue job %s: %s", job_id, exc)
             raise
@@ -86,8 +106,47 @@ class JobQueue:
             return None
         return InFlightJob(job_id=_decode(value), entry_id=_decode(entry_id))
 
-    def _reclaim(self) -> Optional[InFlightJob]:
-        """Pick up an entry idle beyond the threshold from a crashed consumer."""
+    def _times_delivered(self, entry_id: str) -> Optional[int]:
+        try:
+            pending = cast(
+                list,
+                cast(
+                    object,
+                    self._client.xpending_range(
+                        self._key,
+                        self._group,
+                        min=entry_id,
+                        max=entry_id,
+                        count=1,
+                    ),
+                ),
+            )
+        except redis.ResponseError as exc:
+            logger.debug("queue: xpending_range failed for %s: %s", entry_id, exc)
+            return None
+        if not pending:
+            return None
+        record = pending[0]
+        value = record.get("times_delivered") or record.get(b"times_delivered")
+        return int(value) if value is not None else None
+
+    def _deadletter(self, entry_id: str, fields: dict) -> None:
+        """Route an entry to the DLQ stream and ack the original."""
+        self._client.xadd(
+            self._dlq_key,
+            fields,
+            maxlen=self._maxlen,
+            approximate=True,
+        )
+        self.ack(entry_id)
+
+    def _reclaim(self) -> Optional[Union[InFlightJob, DeadLetter]]:
+        """Pick up an entry idle beyond the threshold from a crashed consumer.
+
+        If the entry has been delivered more than max_deliveries times, route it
+        to the DLQ stream and return a DeadLetter so the caller can update DB
+        state. This prevents a poison-pill job from looping forever.
+        """
         try:
             raw_result = cast(
                 object,
@@ -116,17 +175,39 @@ class JobQueue:
         if not claimed:
             return None
         entry_id, fields = claimed[0]
+        entry_id_s = _decode(entry_id)
         value = fields.get(_JOB_FIELD) or fields.get("job_id")
         if value is None:
             # Malformed entry; ack and move on.
-            self.ack(_decode(entry_id))
+            self.ack(entry_id_s)
             return None
-        return InFlightJob(job_id=_decode(value), entry_id=_decode(entry_id))
 
-    def dequeue(self, timeout: int = 5) -> Optional[InFlightJob]:
+        # XAUTOCLAIM has already incremented times_delivered, so this reads the
+        # post-claim value. We fail on the delivery that pushes us past the
+        # ceiling rather than waiting one more round.
+        delivered = self._times_delivered(entry_id_s)
+        if delivered is not None and delivered > self._max_deliveries:
+            logger.error(
+                "queue: entry %s (job_id=%s) exceeded max_deliveries=%d (delivered=%d); routing to DLQ",
+                entry_id_s,
+                _decode(value),
+                self._max_deliveries,
+                delivered,
+            )
+            self._deadletter(entry_id_s, fields)
+            return DeadLetter(
+                job_id=_decode(value),
+                entry_id=entry_id_s,
+                times_delivered=delivered,
+            )
+        return InFlightJob(job_id=_decode(value), entry_id=entry_id_s)
+
+    def dequeue(self, timeout: int = 5) -> Optional[Union[InFlightJob, DeadLetter]]:
         self._ensure_group()
 
         reclaimed = self._reclaim()
+        if isinstance(reclaimed, DeadLetter):
+            return reclaimed
         if reclaimed is not None:
             logger.info(
                 "queue: reclaimed stale entry %s (job_id=%s)",

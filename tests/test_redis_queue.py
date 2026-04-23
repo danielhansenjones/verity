@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from shared.redis_queue import InFlightJob, JobQueue
+from shared.redis_queue import DeadLetter, InFlightJob, JobQueue
+from shared.settings import settings
 
 
 @pytest.fixture
@@ -106,3 +107,84 @@ def test_depth_handles_missing_stream(queue_with_mock_client):
     client.xinfo_groups.side_effect = redis_mod.ResponseError("ERR no such key")
 
     assert q.depth() == 0
+
+
+def test_enqueue_applies_maxlen_trim(queue_with_mock_client):
+    q, client = queue_with_mock_client
+    q.enqueue("job-x")
+
+    _, kwargs = client.xadd.call_args
+    assert kwargs.get("maxlen") == settings.job_queue_maxlen
+    assert kwargs.get("approximate") is True
+
+
+def test_reclaim_below_threshold_returns_inflight(queue_with_mock_client):
+    q, client = queue_with_mock_client
+    client.xautoclaim.return_value = (
+        b"0-0",
+        [(b"1700000000000-0", {b"job_id": b"slow-job"})],
+        [],
+    )
+    # Under the ceiling: normal reclaim.
+    client.xpending_range.return_value = [
+        {"message_id": b"1700000000000-0", "times_delivered": 2}
+    ]
+
+    result = q.dequeue(timeout=1)
+
+    assert result == InFlightJob(job_id="slow-job", entry_id="1700000000000-0")
+    # No DLQ write when under the ceiling. xadd is only called via enqueue().
+    client.xadd.assert_not_called()
+
+
+def test_reclaim_above_threshold_routes_to_dlq(queue_with_mock_client):
+    q, client = queue_with_mock_client
+    client.xautoclaim.return_value = (
+        b"0-0",
+        [(b"1700000000000-0", {b"job_id": b"poison"})],
+        [],
+    )
+    # Over the ceiling: route to DLQ and ack.
+    client.xpending_range.return_value = [
+        {"message_id": b"1700000000000-0", "times_delivered": 6}
+    ]
+
+    result = q.dequeue(timeout=1)
+
+    assert isinstance(result, DeadLetter)
+    assert result.job_id == "poison"
+    assert result.entry_id == "1700000000000-0"
+    assert result.times_delivered == 6
+
+    # DLQ stream received the fields with trim applied.
+    client.xadd.assert_called_once()
+    args, kwargs = client.xadd.call_args
+    assert args[0] == settings.job_queue_dlq_key
+    assert args[1] == {b"job_id": b"poison"}
+    assert kwargs.get("maxlen") == settings.job_queue_maxlen
+    assert kwargs.get("approximate") is True
+
+    # Original entry acked so it cannot be reclaimed again.
+    client.xack.assert_called_once_with(q._key, q._group, "1700000000000-0")
+
+    # XREADGROUP must not be consulted when reclaim produced a result.
+    client.xreadgroup.assert_not_called()
+
+
+def test_reclaim_at_threshold_is_not_dlq(queue_with_mock_client):
+    # Boundary: times_delivered == max_deliveries should still process normally.
+    # Only strictly greater than max_deliveries triggers DLQ.
+    q, client = queue_with_mock_client
+    client.xautoclaim.return_value = (
+        b"0-0",
+        [(b"1700000000000-0", {b"job_id": b"edge"})],
+        [],
+    )
+    client.xpending_range.return_value = [
+        {"message_id": b"1700000000000-0", "times_delivered": settings.job_queue_max_deliveries}
+    ]
+
+    result = q.dequeue(timeout=1)
+
+    assert isinstance(result, InFlightJob)
+    client.xadd.assert_not_called()

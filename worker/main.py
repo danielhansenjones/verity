@@ -14,7 +14,7 @@ from shared.metrics import (
 )
 from shared.minio_client import StorageClient
 from shared.models import Chunk, Job, JobStage, JobStatus, init_db, get_session
-from shared.redis_queue import JobQueue
+from shared.redis_queue import DeadLetter, JobQueue
 from shared.settings import settings
 from worker.processors import assembler, classifier, ingestion, scorer
 
@@ -74,6 +74,28 @@ def main():
         if inflight is None:
             continue
 
+        if isinstance(inflight, DeadLetter):
+            # Queue has already acked the entry and written to the DLQ stream;
+            # we only need to update DB-side bookkeeping.
+            logger.error(
+                "worker: job %s dead-lettered after %d deliveries",
+                inflight.job_id,
+                inflight.times_delivered,
+            )
+            db = get_session()
+            try:
+                job = db.get(Job, inflight.job_id)
+                if job is not None and job.status != JobStatus.COMPLETED:
+                    job.status = JobStatus.FAILED
+                    job.error = (
+                        f"exceeded max deliveries ({inflight.times_delivered})"
+                    )
+                    db.commit()
+                    jobs_completed_total.labels(status="failed").inc()
+            finally:
+                db.close()
+            continue
+
         job_id = inflight.job_id
         entry_id = inflight.entry_id
         # Track whether we can safely ack this entry; set False if the crash
@@ -85,6 +107,19 @@ def main():
             job = db.get(Job, job_id)
             if job is None:
                 logger.warning("worker: job %s not found, skipping", job_id)
+                continue
+
+            # Idempotency guard: a prior attempt may have committed COMPLETED
+            # before its ack reached Redis, or the entry may have been reclaimed
+            # after completion. Treat as no-op success rather than re-running
+            # stages (which would duplicate assembly output / double-count).
+            if job.status == JobStatus.COMPLETED or job.stage == JobStage.DONE:
+                logger.info(
+                    "worker: job %s already completed (status=%s stage=%s); acking",
+                    job_id,
+                    job.status,
+                    job.stage,
+                )
                 continue
 
             job.status = JobStatus.RUNNING
