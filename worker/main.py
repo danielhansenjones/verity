@@ -1,11 +1,11 @@
 import logging
-import sys
 import time
 
 import torch
 from prometheus_client import start_http_server
 from transformers import pipeline as hf_pipeline
 
+from shared.logging_config import configure_logging
 from shared.metrics import (
     job_stage_duration_seconds,
     job_stage_errors_total,
@@ -18,11 +18,7 @@ from shared.redis_queue import DeadLetter, JobQueue
 from shared.settings import settings
 from worker.processors import assembler, classifier, ingestion, scorer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -98,6 +94,7 @@ def main():
 
         job_id = inflight.job_id
         entry_id = inflight.entry_id
+        log = logging.LoggerAdapter(logger, {"job_id": job_id, "stage": None})
         # Track whether we can safely ack this entry; set False if the crash
         # path should leave it in PEL for another consumer to reclaim.
         should_ack = True
@@ -106,19 +103,19 @@ def main():
         try:
             job = db.get(Job, job_id)
             if job is None:
-                logger.warning("worker: job %s not found, skipping", job_id)
+                log.warning("worker: job not found, skipping")
                 continue
+
+            log.extra["stage"] = str(job.stage)
 
             # Idempotency guard: a prior attempt may have committed COMPLETED
             # before its ack reached Redis, or the entry may have been reclaimed
             # after completion. Treat as no-op success rather than re-running
             # stages (which would duplicate assembly output / double-count).
             if job.status == JobStatus.COMPLETED or job.stage == JobStage.DONE:
-                logger.info(
-                    "worker: job %s already completed (status=%s stage=%s); acking",
-                    job_id,
+                log.info(
+                    "worker: job already completed (status=%s); acking",
                     job.status,
-                    job.stage,
                 )
                 continue
 
@@ -127,22 +124,26 @@ def main():
 
             try:
                 if job.stage == JobStage.INGESTION:
+                    log.extra["stage"] = "ingestion"
                     with job_stage_duration_seconds.labels(stage="ingestion").time():
                         ingestion.run(job, db, storage)
 
                 if job.stage == JobStage.CLASSIFICATION:
+                    log.extra["stage"] = "classification"
                     with job_stage_duration_seconds.labels(
                         stage="classification"
                     ).time():
                         classifier.run(job, db, classifier_pipeline)
 
                 if job.stage == JobStage.SCORING:
+                    log.extra["stage"] = "scoring"
                     with job_stage_duration_seconds.labels(stage="scoring").time():
                         scored = scorer.run(job, db, tone_pipeline)
                 else:
                     scored = None
 
                 if job.stage == JobStage.ASSEMBLY:
+                    log.extra["stage"] = "assembly"
                     with job_stage_duration_seconds.labels(stage="assembly").time():
                         if scored is None:
                             chunks = (
@@ -155,11 +156,12 @@ def main():
                         assembler.run(job, db, storage, scored)
 
                 if job.status == JobStatus.COMPLETED:
+                    log.extra["stage"] = str(job.stage)
                     jobs_completed_total.labels(status="completed").inc()
 
             except Exception as exc:
                 job_stage_errors_total.labels(stage=str(job.stage)).inc()
-                logger.exception("worker: job %s failed at stage %s", job_id, job.stage)
+                log.exception("worker: job failed")
                 job.error = str(exc)
                 if job.retry_count < job.max_retries:
                     job.status = JobStatus.RETRYING
@@ -168,31 +170,28 @@ def main():
                     # entry resets the idle timer, so transient reclaim storms
                     # cannot double-process retries.
                     queue.enqueue(job_id)
-                    logger.info(
-                        "worker: job %s re-queued (attempt %d/%d)",
-                        job_id,
+                    log.info(
+                        "worker: job re-queued (attempt %d/%d)",
                         job.retry_count,
                         job.max_retries,
                     )
                 else:
                     job.status = JobStatus.FAILED
                     jobs_completed_total.labels(status="failed").inc()
-                    logger.error(
-                        "worker: job %s exhausted retries, marked failed", job_id
-                    )
+                    log.error("worker: job exhausted retries, marked failed")
                 db.commit()
         except Exception:
             # Unexpected error outside the stage handlers (db commit, etc).
             # Leave the entry unacked so XAUTOCLAIM can hand it off.
             should_ack = False
-            logger.exception("worker: unexpected error handling job %s", job_id)
+            log.exception("worker: unexpected error handling job")
         finally:
             db.close()
             if should_ack:
                 try:
                     queue.ack(entry_id)
                 except Exception:
-                    logger.exception(
+                    log.exception(
                         "worker: failed to ack entry %s; entry will be reclaimed",
                         entry_id,
                     )

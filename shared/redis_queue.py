@@ -188,7 +188,8 @@ class JobQueue:
         delivered = self._times_delivered(entry_id_s)
         if delivered is not None and delivered > self._max_deliveries:
             logger.error(
-                "queue: entry %s (job_id=%s) exceeded max_deliveries=%d (delivered=%d); routing to DLQ",
+                "queue: entry %s (job_id=%s) exceeded max_deliveries=%d "
+                "(delivered=%d); routing to DLQ",
                 entry_id_s,
                 _decode(value),
                 self._max_deliveries,

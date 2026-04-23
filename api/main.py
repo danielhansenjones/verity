@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from api.auth import require_api_key
 from api.rate_limit import limiter, read_limit, submit_limit
+from shared.logging_config import configure_logging
 from shared.metrics import jobs_submitted_total
 from shared.minio_client import StorageClient
 from shared.models import (
@@ -42,6 +43,7 @@ from shared.models import (
 from shared.redis_queue import JobQueue
 from shared.settings import settings
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _RAW_PREFIX = "contracts/raw"
@@ -183,6 +185,12 @@ async def submit_job(
 ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    if file.content_type and file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are accepted (Content-Type must be application/pdf)",
+        )
 
     pdf_bytes = await file.read()
 
