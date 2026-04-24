@@ -49,17 +49,16 @@ def _to_tone_score(result: dict) -> float:
 
 
 def score_chunks(chunks: list[Chunk], tone_pipeline) -> list[dict]:
-    """
-    Score each chunk and return a list of per-chunk score dicts:
-      { chunk_id, index, clause_type, tone_score, flags, chunk_score }
-    """
     texts = [c.text[:512] for c in chunks]  # truncate to avoid token overflow
     tone_results = tone_pipeline(texts, batch_size=_BATCH_SIZE)
     tone_scores = [_to_tone_score(r) for r in tone_results]
 
     scored = []
     for chunk, ts in zip(chunks, tone_scores):
-        hits = _apply_risk_patterns(chunk.text)
+        # Use extracted span for rule matching when available for higher precision;
+        # fall back to full chunk text otherwise
+        rule_text = chunk.extracted_span if chunk.extracted_span else chunk.text
+        hits = _apply_risk_patterns(rule_text)
 
         max_flag_score = max(
             (_SEVERITY_SCORES[h["severity"]] for h in hits), default=0.0
@@ -78,6 +77,8 @@ def score_chunks(chunks: list[Chunk], tone_pipeline) -> list[dict]:
                 "index": chunk.index,
                 "clause_type": chunk.clause_type,
                 "confidence": chunk.confidence,
+                "extracted_span": chunk.extracted_span,
+                "extracted_span_category": chunk.extracted_span_category,
                 "tone_score": ts,
                 "flags": hits,
                 "chunk_score": chunk_score,
