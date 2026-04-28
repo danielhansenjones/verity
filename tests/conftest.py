@@ -6,15 +6,6 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock
 
-# Stub out the broken redis package before any project module imports it.
-# The venv copy of redis/client.py contains Python-2 syntax that causes a
-# SyntaxError at import time.  Since every test that touches redis mocks it
-# anyway, injecting a lightweight stand-in here is safe.
-_redis_stub = MagicMock()
-_redis_stub.Redis = MagicMock
-sys.modules.setdefault("redis", _redis_stub)
-sys.modules.setdefault("redis.client", _redis_stub)
-sys.modules.setdefault("redis.exceptions", _redis_stub)
 
 import pytest
 from sqlalchemy import create_engine
@@ -82,7 +73,7 @@ def mock_queue():
 
 
 def make_classifier_pipeline(label: str = "indemnification", score: float = 0.85):
-    def _pipeline(texts, candidate_labels=None, batch_size=None):
+    def _pipeline(texts, candidate_labels=None, batch_size=None, multi_label=False):
         if isinstance(texts, str):
             texts = [texts]
         results = [

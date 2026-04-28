@@ -1,5 +1,7 @@
+import time
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -69,7 +71,7 @@ def test_batch_boundary_nine_chunks_requires_two_batches(
     call_count = {"n": 0}
     base = make_classifier_pipeline()
 
-    def counting_pipeline(texts, candidate_labels=None, batch_size=None):
+    def counting_pipeline(texts, candidate_labels=None, batch_size=None, multi_label=False):
         call_count["n"] += 1
         return base(texts, candidate_labels=candidate_labels, batch_size=batch_size)
 
@@ -85,7 +87,7 @@ def test_single_chunk_pipeline_result_coerced_correctly(
     job = make_job(stage=JobStage.CLASSIFICATION)
     make_chunk(job.id, "Only one clause in this document.", index=0)
 
-    def single_dict_pipeline(texts, candidate_labels=None, batch_size=None):
+    def single_dict_pipeline(texts, candidate_labels=None, batch_size=None, multi_label=False):
         labels = candidate_labels or []
         return {
             "labels": ["confidentiality"]
@@ -113,6 +115,55 @@ def test_empty_chunk_list_still_advances_stage(make_job, db_session):
     job = make_job(stage=JobStage.CLASSIFICATION)
     run(job, db_session, make_classifier_pipeline())
     assert job.stage == JobStage.SCORING
+
+
+def test_span_extraction_populates_chunk_fields(make_job, make_chunk, db_session):
+    job = make_job(stage=JobStage.CLASSIFICATION)
+    make_chunk(
+        job.id, "Either party may terminate this agreement for convenience.", index=0
+    )
+
+    extractor = MagicMock()
+    extractor.extract.return_value = {
+        "Termination For Convenience": {
+            "text": "terminate this agreement for convenience",
+            "score": 0.91,
+        }
+    }
+
+    run(
+        job,
+        db_session,
+        make_classifier_pipeline(label="termination", score=0.95),
+        span_extractor=extractor,
+    )
+
+    chunk = db_session.query(Chunk).filter(Chunk.job_id == job.id).first()
+    assert chunk.extracted_span == "terminate this agreement for convenience"
+    assert chunk.extracted_span_category == "Termination For Convenience"
+
+
+def test_span_extraction_timeout_falls_back_to_tier1(make_job, make_chunk, db_session):
+    job = make_job(stage=JobStage.CLASSIFICATION)
+    make_chunk(job.id, "The parties shall indemnify each other.", index=0)
+
+    extractor = MagicMock()
+    extractor.extract.side_effect = lambda text, categories: (time.sleep(1), {})[1]
+
+    with patch("worker.processors.classifier.settings") as mock_settings:
+        mock_settings.span_extractor_tier1_confidence_threshold = 0.7
+        mock_settings.span_extractor_timeout_s = 0.05
+
+        run(
+            job,
+            db_session,
+            make_classifier_pipeline(label="indemnification", score=0.95),
+            span_extractor=extractor,
+        )
+
+    chunk = db_session.query(Chunk).filter(Chunk.job_id == job.id).first()
+    assert chunk.clause_type == "indemnification"
+    assert chunk.extracted_span is None
 
 
 def test_all_clause_labels_can_be_assigned(make_job, make_chunk, db_session):
