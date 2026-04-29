@@ -49,8 +49,12 @@ class JobQueue:
     reclaims the entry for another consumer after job_queue_idle_ms.
     """
 
-    def __init__(self, consumer_name: Optional[str] = None):
-        self._client = redis.Redis(
+    def __init__(
+        self,
+        consumer_name: Optional[str] = None,
+        _redis_client=None,
+    ):
+        self._client = _redis_client or redis.Redis(
             host=settings.redis_host,
             port=settings.redis_port,
         )
