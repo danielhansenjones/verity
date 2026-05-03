@@ -25,7 +25,9 @@ CLAUSE_LABELS = [
     "force majeure",
 ]
 
-# TODO: recalibrate now that multi_label=True shifts sigmoid scores higher than softmax
+# More permissive than the val-tuned category-presence threshold (0.95).
+# Label assignment tolerates false positives: a wrong label is penalized by the
+# rule layer and scoring weights; a miss just emits "general".
 _CONFIDENCE_THRESHOLD = 0.5
 _BATCH_SIZE = 8
 
@@ -74,7 +76,8 @@ def run(
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    f"classifier inference failed on batch starting at index {batch_start}"
+                    f"classifier inference failed on batch"
+                    f" starting at index {batch_start}"
                 ) from exc
 
             if isinstance(results, dict):
@@ -121,7 +124,8 @@ def run(
                             )
                     except concurrent.futures.TimeoutError:
                         logger.warning(
-                            "classifier: span extraction timed out for chunk=%s after %.1fs",
+                            "classifier: span extraction timed out "
+                            "for chunk=%s after %.1fs",
                             chunk.id,
                             settings.span_extractor_timeout_s,
                         )

@@ -26,10 +26,12 @@ Usage (requires: uv sync --group dev, or pip install locust):
   locust -f locustfile.py SmokeUser --headless -u 1 -r 1 --host http://localhost:8000
 
   # Load - 3 concurrent users, 5 min total; console stays active throughout
-  locust -f locustfile.py LoadUser --headless -u 3 -r 1 --run-time 5m --host http://localhost:8000
+  locust -f locustfile.py LoadUser --headless -u 3 -r 1 \
+    --run-time 5m --host http://localhost:8000
 
   # Stress - 20 VUs flooding submit for 1 min
-  locust -f locustfile.py StressUser --headless -u 20 -r 20 --run-time 1m --host http://localhost:8000
+  locust -f locustfile.py StressUser --headless -u 20 -r 20 \
+    --run-time 1m --host http://localhost:8000
 
   # Web UI - pick class and VU count interactively at http://localhost:8089
   locust -f locustfile.py --host http://localhost:8000
@@ -89,7 +91,7 @@ class _PipelineUser(HttpUser):
 
 
 class SmokeUser(_PipelineUser):
-    """1 VU, 1 job end-to-end. Calls runner.quit() on completion to trigger the final stats output."""
+    """1 VU, 1 job end-to-end. Calls runner.quit() when done to flush stats."""
     wait_time = constant(0)
 
     @task
