@@ -3,6 +3,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import (
@@ -25,6 +26,7 @@ from sqlalchemy.orm import (
 )
 
 from shared.settings import settings
+from shared.types import Vector
 
 
 class JobStatus(str, enum.Enum):
@@ -93,6 +95,9 @@ class Chunk(Base):
     extracted_span_category: Mapped[Optional[str]] = mapped_column(
         String, nullable=True
     )
+    embedding: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(384), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
@@ -144,4 +149,13 @@ def get_session():
 
 
 def init_db():
+    # create_all bootstraps tables for fresh databases; alembic then layers
+    # incremental schema changes (pgvector column, future evals tables, etc).
     Base.metadata.create_all(_engine)
+
+    from alembic import command
+    from alembic.config import Config
+
+    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    cfg = Config(str(config_path))
+    command.upgrade(cfg, "head")

@@ -26,6 +26,10 @@ dependencies = [
     "prometheus-client>=0.22.0",
     "spacy>=3.8.10,<3.8.14",
     "pyyaml>=6.0.0",
+    "alembic>=1.14.0",
+    "pgvector>=0.3.0",
+    "sentence-transformers>=3.0.0",
+    "anthropic>=0.40.0",
 ]
 
 [dependency-groups]
