@@ -189,6 +189,48 @@ def test_run_downloads_from_correct_object_key(
     mock_storage.download_bytes.assert_called_once_with(job.object_key)
 
 
+def test_run_leaves_embedding_null_when_no_model_provided(
+    make_job, db_session, mock_storage, make_pdf_bytes
+):
+    mock_storage.download_bytes.return_value = make_pdf_bytes(NDA_TEXT)
+
+    job = make_job(stage=JobStage.INGESTION)
+    run(job, db_session, mock_storage)
+
+    chunks = db_session.query(Chunk).filter(Chunk.job_id == job.id).all()
+    assert all(c.embedding is None for c in chunks)
+
+
+def test_run_populates_embeddings_when_model_provided(
+    make_job, db_session, mock_storage, make_pdf_bytes
+):
+    mock_storage.download_bytes.return_value = make_pdf_bytes(NDA_TEXT)
+
+    embedding_model = MagicMock()
+    embedding_model.embed_documents.side_effect = (
+        lambda texts, **_: [[0.1] * 384 for _ in texts]
+    )
+
+    job = make_job(stage=JobStage.INGESTION)
+    run(job, db_session, mock_storage, embedding_model=embedding_model)
+
+    chunks = (
+        db_session.query(Chunk)
+        .filter(Chunk.job_id == job.id)
+        .order_by(Chunk.index)
+        .all()
+    )
+    assert len(chunks) >= 3
+    for c in chunks:
+        assert c.embedding is not None
+        assert len(c.embedding) == 384
+
+    embedding_model.embed_documents.assert_called_once()
+    texts_arg = embedding_model.embed_documents.call_args.args[0]
+    assert len(texts_arg) == len(chunks)
+    assert texts_arg == [c.text for c in chunks]
+
+
 @pytest.mark.parametrize("pdf_filename", ["Document.pdf", "Document4.pdf"])
 def test_real_pdf_is_parseable_by_pypdf(pdf_filename):
     pdf_path = TEST_DOCUMENTS_DIR / pdf_filename

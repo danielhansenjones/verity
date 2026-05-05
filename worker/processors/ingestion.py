@@ -3,12 +3,16 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
 
 import pypdf
 from sqlalchemy.orm import Session
 
 from shared.minio_client import StorageClient
 from shared.models import Chunk, Job, JobStage
+
+if TYPE_CHECKING:
+    from worker.processors.embeddings import EmbeddingModel
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +67,12 @@ def _chunk_text(full_text: str) -> list[str]:
     return [s for s in final if s.strip()]
 
 
-def run(job: Job, db: Session, storage: StorageClient) -> None:
+def run(
+    job: Job,
+    db: Session,
+    storage: StorageClient,
+    embedding_model: Optional["EmbeddingModel"] = None,
+) -> None:
     logger.info("ingestion: job=%s key=%s", job.id, job.object_key)
 
     pdf_bytes = storage.download_bytes(job.object_key)
@@ -90,6 +99,7 @@ def run(job: Job, db: Session, storage: StorageClient) -> None:
 
     logger.info("ingestion: %d chunks produced", len(sections))
 
+    chunks: list[Chunk] = []
     for idx, text in enumerate(sections):
         chunk = Chunk(
             id=str(uuid.uuid4()),
@@ -100,8 +110,17 @@ def run(job: Job, db: Session, storage: StorageClient) -> None:
             created_at=datetime.now(timezone.utc),
         )
         db.add(chunk)
+        chunks.append(chunk)
+
+    if embedding_model is not None:
+        # Single batched call keeps embedding cost amortised across chunks
+        # and ensures all-or-nothing population within the ingestion transaction.
+        vectors = embedding_model.embed_documents([c.text for c in chunks])
+        for chunk, vec in zip(chunks, vectors):
+            chunk.embedding = vec
+        logger.info("ingestion: embedded %d chunks", len(chunks))
 
     job.stage = JobStage.CLASSIFICATION
     job.updated_at = datetime.now(timezone.utc)
     db.commit()
-    logger.info("ingestion: done, stage → classification")
+    logger.info("ingestion: done, stage -> classification")

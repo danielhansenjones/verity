@@ -17,6 +17,7 @@ from shared.models import Chunk, Job, JobStage, JobStatus, init_db, get_session
 from shared.redis_queue import DeadLetter, JobQueue
 from shared.settings import settings
 from worker.processors import assembler, classifier, ingestion, scorer
+from worker.processors.embeddings import EmbeddingModel
 from worker.processors.span_extractor import SpanExtractor
 
 configure_logging()
@@ -48,6 +49,12 @@ def main():
         model="distilbert-base-uncased-finetuned-sst-2-english",
         device=device,
     )
+
+    logger.info("worker: loading embedding model (BAAI/bge-small-en-v1.5)")
+    embedding_model = EmbeddingModel(
+        device="cuda" if device == 0 else "cpu",
+    )
+    logger.info("worker: embedding model loaded (dim=%d)", embedding_model.dimension)
 
     span_extractor = None
     if settings.span_extractor_enabled:
@@ -147,7 +154,7 @@ def main():
                 if job.stage == JobStage.INGESTION:
                     log.extra["stage"] = "ingestion"
                     with job_stage_duration_seconds.labels(stage="ingestion").time():
-                        ingestion.run(job, db, storage)
+                        ingestion.run(job, db, storage, embedding_model)
 
                 if job.stage == JobStage.CLASSIFICATION:
                     log.extra["stage"] = "classification"
