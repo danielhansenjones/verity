@@ -27,9 +27,17 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from api.auth import require_api_key
+from api.llm import AnswerResponse, ask as llm_ask, grounding_error
+from api.rag import embed_query, preload_embedding_model, retrieve
 from api.rate_limit import limiter, read_limit, submit_limit
 from shared.logging_config import configure_logging
-from shared.metrics import jobs_submitted_total
+from shared.metrics import (
+    jobs_submitted_total,
+    rag_generation_latency_seconds,
+    rag_questions_total,
+    rag_retrieval_latency_seconds,
+    rag_tokens_total,
+)
 from shared.minio_client import StorageClient
 from shared.models import (
     Job,
@@ -52,6 +60,10 @@ _RAW_PREFIX = "contracts/raw"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Pre-load the embedding model so the first /ask request does not block
+    # on a 5-10 s sentence-transformer initialisation. The embedding model
+    # is needed regardless of which LLM backend is configured.
+    preload_embedding_model()
     yield
 
 
@@ -131,6 +143,11 @@ class JobListItem(BaseModel):
     stage: str
     filename: str
     created_at: datetime
+
+
+class AskRequest(BaseModel):
+    question: str
+    top_k: int = 8
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -335,6 +352,107 @@ def get_job(request: Request, job_id: str):
             error=job.error,
             created_at=job.created_at,
         )
+    finally:
+        db.close()
+
+
+@app.post(
+    "/jobs/{job_id}/ask",
+    response_model=AnswerResponse,
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit(read_limit)
+def ask(request: Request, job_id: str, body: AskRequest):
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+    if len(body.question) > 2000:
+        raise HTTPException(
+            status_code=400, detail="question must be <= 2000 characters"
+        )
+
+    if not settings.anthropic_api_key:
+        rag_questions_total.labels(outcome="error").inc()
+        raise HTTPException(
+            status_code=503,
+            detail="Generation service unavailable: ANTHROPIC_API_KEY not configured",
+        )
+
+    db = get_session()
+    try:
+        job = db.get(Job, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.COMPLETED:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Job is not completed yet (status={job.status},"
+                    f" stage={job.stage})"
+                ),
+            )
+
+        with rag_retrieval_latency_seconds.time():
+            query_vec = embed_query(body.question)
+            chunks = retrieve(db, job_id, query_vec, k=body.top_k)
+
+        if not chunks:
+            rag_questions_total.labels(outcome="refused").inc()
+            logger.info(
+                "api: rag refused job_id=%s reason=no_embedded_chunks", job_id
+            )
+            return AnswerResponse(
+                answer="",
+                citations=[],
+                refusal_reason=(
+                    "No embedded chunks available for this job."
+                    " Run scripts/backfill_embeddings.py."
+                ),
+            )
+
+        try:
+            with rag_generation_latency_seconds.time():
+                response, usage = llm_ask(body.question, chunks)
+        except Exception as exc:
+            rag_questions_total.labels(outcome="error").inc()
+            logger.exception("api: rag generation failed job_id=%s", job_id)
+            raise HTTPException(
+                status_code=502, detail=f"Generation failed: {exc}"
+            )
+
+        rag_tokens_total.labels(direction="in").inc(usage["input_tokens"])
+        rag_tokens_total.labels(direction="out").inc(usage["output_tokens"])
+        if usage.get("cache_read_input_tokens"):
+            rag_tokens_total.labels(direction="cache_read").inc(
+                usage["cache_read_input_tokens"]
+            )
+        if usage.get("cache_creation_input_tokens"):
+            rag_tokens_total.labels(direction="cache_creation").inc(
+                usage["cache_creation_input_tokens"]
+            )
+
+        err = grounding_error(response, chunks)
+        if err:
+            rag_questions_total.labels(outcome="error").inc()
+            logger.warning(
+                "api: rag grounding failed job_id=%s err=%s", job_id, err
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Generation produced ungrounded output: {err}",
+            )
+
+        outcome = "refused" if response.refusal_reason else "answered"
+        rag_questions_total.labels(outcome=outcome).inc()
+        logger.info(
+            "api: rag answer job_id=%s outcome=%s tokens_in=%d tokens_out=%d"
+            " citations=%d",
+            job_id,
+            outcome,
+            usage["input_tokens"],
+            usage["output_tokens"],
+            len(response.citations),
+        )
+        return response
     finally:
         db.close()
 

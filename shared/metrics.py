@@ -42,3 +42,35 @@ queue_depth = Gauge(
     "queue_depth",
     "Number of jobs waiting in the queue at last sample.",
 )
+
+# Labels:
+#   outcome: "answered" (model answered with citations), "refused" (model
+#            refused on insufficient evidence), "error" (grounding failure
+#            or upstream error before a response was returned).
+rag_questions_total = Counter(
+    "rag_questions_total",
+    "Outcomes of /jobs/{id}/ask requests.",
+    labelnames=("outcome",),
+)
+
+rag_retrieval_latency_seconds = Histogram(
+    "rag_retrieval_latency_seconds",
+    "Wall-clock time spent embedding the query and pulling top-k chunks.",
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0),
+)
+
+rag_generation_latency_seconds = Histogram(
+    "rag_generation_latency_seconds",
+    "Wall-clock time for the LLM call that produces the structured answer.",
+    buckets=(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 60.0),
+)
+
+# Labels:
+#   direction: "in" (request input), "out" (model output),
+#              "cache_read" (cached input reused), "cache_creation"
+#              (input tokens written to cache for the first time).
+rag_tokens_total = Counter(
+    "rag_tokens_total",
+    "Anthropic API token usage attributed to /ask.",
+    labelnames=("direction",),
+)

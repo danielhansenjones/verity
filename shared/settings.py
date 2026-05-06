@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     span_extractor_tier1_confidence_threshold: float = 0.7
     span_extractor_timeout_s: float = 30.0
 
+    # Anthropic API for the /ask RAG endpoint. Unset disables /ask with a 503;
+    # the rest of the pipeline (ingest, classify, score, assemble) is unaffected.
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-sonnet-4-6"
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
