@@ -1,0 +1,80 @@
+name: RAG Evals
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'api/rag.py'
+      - 'api/llm.py'
+      - 'worker/processors/embeddings.py'
+      - 'worker/processors/ingestion.py'
+      - 'shared/types.py'
+      - 'shared/models.py'
+      - 'migrations/**'
+      - 'evals/**'
+
+jobs:
+  evals:
+    name: RAG eval harness
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16-trixie
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: appdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: appdb
+      POSTGRES_HOST: localhost
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Verify Anthropic key is configured
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not configured. Skip this workflow or add the secret in repo settings."
+            exit 1
+          fi
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Run frozen eval subset
+        run: |
+          uv run python evals/run.py \
+            --limit 10 \
+            --max-cost 2.0 \
+            --confirm-cost \
+            --output evals/results/ci.json
+
+      - name: Render summary
+        if: always()
+        run: uv run python evals/summarize.py evals/results/ci.json >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: evals/results/ci.json
+          retention-days: 30
