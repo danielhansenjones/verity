@@ -61,9 +61,15 @@ _RAW_PREFIX = "contracts/raw"
 async def lifespan(app: FastAPI):
     init_db()
     # Pre-load the embedding model so the first /ask request does not block
-    # on a 5-10 s sentence-transformer initialisation. The embedding model
-    # is needed regardless of which LLM backend is configured.
-    preload_embedding_model()
+    # on a 5-10 s sentence-transformer initialisation. Skipped when /ask is
+    # going to return 503 anyway (ANTHROPIC_API_KEY unset) so dev startup
+    # without the RAG backend stays fast.
+    if settings.anthropic_api_key:
+        preload_embedding_model()
+    else:
+        logger.info(
+            "api: ANTHROPIC_API_KEY unset; skipping embedding model preload"
+        )
     yield
 
 
