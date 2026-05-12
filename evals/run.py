@@ -64,12 +64,20 @@ def _ensure_fixture_job(
     if cached_id:
         job = db.get(Job, cached_id)
         if job is not None and job.status == JobStatus.COMPLETED:
-            has_embedded = (
-                db.query(Chunk)
-                .filter(Chunk.job_id == cached_id, Chunk.embedding.is_not(None))
-                .first()
+            # Require *all* chunks to be embedded, not just the first.
+            # A partial prior run could otherwise be reused and silently
+            # exclude un-embedded chunks from retrieval.
+            total = (
+                db.query(Chunk).filter(Chunk.job_id == cached_id).count()
             )
-            if has_embedded is not None:
+            embedded = (
+                db.query(Chunk)
+                .filter(
+                    Chunk.job_id == cached_id, Chunk.embedding.is_not(None)
+                )
+                .count()
+            )
+            if total > 0 and embedded == total:
                 return cached_id
 
     pdf_path = _FIXTURE_DIR / pdf_name
