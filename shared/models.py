@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -149,8 +150,17 @@ def get_session():
 
 
 def init_db():
+    # On postgresql, the pgvector extension must exist before create_all can
+    # emit `vector(384)` column DDL. On other dialects (sqlite test fixture),
+    # the Vector TypeDecorator falls back to JSON and no extension is needed.
+    if _engine.dialect.name == "postgresql":
+        with _engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
     # create_all bootstraps tables for fresh databases; alembic then layers
     # incremental schema changes (pgvector column, future evals tables, etc).
+    # Migrations are written idempotently so create_all and alembic upgrade
+    # agree on the steady state.
     Base.metadata.create_all(_engine)
 
     from alembic import command

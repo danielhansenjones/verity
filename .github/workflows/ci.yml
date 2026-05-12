@@ -43,7 +43,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Run tests
-        run: uv run pytest --tb=short -q --ignore=tests/test_redis_integration.py
+        run: |
+          uv run pytest --tb=short -q \
+            --ignore=tests/test_redis_integration.py \
+            --ignore=tests/test_db_init.py
 
   redis-integration:
     name: Redis Integration Tests
@@ -63,3 +66,22 @@ jobs:
 
       - name: Run Redis integration tests
         run: uv run pytest tests/test_redis_integration.py --tb=short -v
+
+  db-integration:
+    name: DB Integration Tests
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run DB init integration tests
+        run: uv run pytest tests/test_db_init.py --tb=short -v

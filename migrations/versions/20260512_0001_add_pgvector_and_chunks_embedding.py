@@ -7,9 +7,7 @@ Create Date: 2026-05-12
 """
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
-from pgvector.sqlalchemy import Vector
 
 
 revision: str = "0001"
@@ -19,21 +17,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Idempotent across the hybrid bootstrap (Base.metadata.create_all may have
+    # already created the column on a fresh DB) and the legacy upgrade path
+    # (existing dev volumes where chunks predates this branch).
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.add_column(
-        "chunks",
-        sa.Column("embedding", Vector(384), nullable=True),
-    )
-    op.create_index(
-        "chunks_embedding_idx",
-        "chunks",
-        ["embedding"],
-        postgresql_using="hnsw",
-        postgresql_ops={"embedding": "vector_cosine_ops"},
+    op.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(384)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS chunks_embedding_idx "
+        "ON chunks USING hnsw (embedding vector_cosine_ops)"
     )
 
 
 def downgrade() -> None:
-    op.drop_index("chunks_embedding_idx", table_name="chunks")
-    op.drop_column("chunks", "embedding")
+    op.execute("DROP INDEX IF EXISTS chunks_embedding_idx")
+    op.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS embedding")
     # Extension intentionally left in place; other schemas may depend on it.
