@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from api.llm import AnswerResponse, Citation
 from shared.models import Chunk, Job, JobStage, JobStatus
-from tests.conftest import reset_api_tables
+from tests.conftest import reset_api_tables, session_factory
 
 
 @pytest.fixture
@@ -19,9 +19,8 @@ def rag_env(sqlite_engine, monkeypatch):
     monkeypatch.setattr("api.main.settings.anthropic_api_key", "test-key")
 
     with (
-        patch("api.main.init_db"),
         patch("api.main.preload_embedding_model"),
-        patch("api.main.get_session", side_effect=lambda: SessionLocal()),
+        patch("api.main.get_session", session_factory(SessionLocal)),
     ):
         from api.main import app
         from api.rate_limit import limiter

@@ -55,6 +55,9 @@ jobs:
             exit 1
           fi
 
+      - name: Bootstrap schema
+        run: uv run python -m scripts.init_db
+
       - name: Run frozen eval subset
         run: |
           uv run python evals/run.py \

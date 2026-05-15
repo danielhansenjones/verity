@@ -46,7 +46,6 @@ from shared.models import (
     JobStatus,
     RiskResult,
     get_session,
-    init_db,
 )
 from shared.redis_queue import JobQueue
 from shared.settings import settings
@@ -59,7 +58,10 @@ _RAW_PREFIX = "contracts/raw"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    # Schema bootstrap is handled out-of-band by scripts/init_db.py (run by
+    # the docker-compose init-db service or a CI step). The API process
+    # assumes the schema exists by the time the first request lands.
+    #
     # Pre-load the embedding model so the first /ask request does not block
     # on a 5-10 s sentence-transformer initialisation. Skipped when /ask is
     # going to return 503 anyway (ANTHROPIC_API_KEY unset) so dev startup
@@ -163,14 +165,12 @@ def metrics():
 
 @app.get("/health")
 def health():
-    db = get_session()
     try:
-        db.execute(text("SELECT 1"))
+        with get_session() as db:
+            db.execute(text("SELECT 1"))
         db_ok = True
     except Exception:
         db_ok = False
-    finally:
-        db.close()
 
     try:
         queue = JobQueue()
@@ -229,8 +229,7 @@ async def submit_job(
     dedup_key = _dedup_key(idempotency_key, pdf_bytes)
 
     # Fast path: existing dedup row short-circuits before any storage or queue work.
-    db = get_session()
-    try:
+    with get_session() as db:
         existing = db.query(JobDedup).filter(JobDedup.key == dedup_key).first()
         if existing is not None:
             job = db.get(Job, existing.job_id)
@@ -241,8 +240,6 @@ async def submit_job(
                 return JobCreatedResponse(
                     job_id=job.id, status=job.status, filename=job.filename
                 )
-    finally:
-        db.close()
 
     job_id = str(uuid.uuid4())
     object_key = f"{_RAW_PREFIX}/{job_id}.pdf"
@@ -254,8 +251,7 @@ async def submit_job(
         logger.error("api: storage upload failed for job %s: %s", job_id, exc)
         raise HTTPException(status_code=503, detail="Storage service unavailable")
 
-    db = get_session()
-    try:
+    with get_session() as db:
         job = Job(
             id=job_id,
             status=JobStatus.QUEUED,
@@ -289,8 +285,6 @@ async def submit_job(
                         filename=winner.filename,
                     )
             raise
-    finally:
-        db.close()
 
     try:
         queue = JobQueue()
@@ -313,8 +307,7 @@ async def submit_job(
 )
 @limiter.limit(read_limit)
 def list_jobs(request: Request, status: Optional[str] = Query(default=None)):
-    db = get_session()
-    try:
+    with get_session() as db:
         q = db.query(Job).order_by(Job.created_at.desc())
         if status:
             try:
@@ -333,8 +326,6 @@ def list_jobs(request: Request, status: Optional[str] = Query(default=None)):
             )
             for j in jobs
         ]
-    finally:
-        db.close()
 
 
 @app.get(
@@ -344,8 +335,7 @@ def list_jobs(request: Request, status: Optional[str] = Query(default=None)):
 )
 @limiter.limit(read_limit)
 def get_job(request: Request, job_id: str):
-    db = get_session()
-    try:
+    with get_session() as db:
         job = db.get(Job, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
@@ -358,8 +348,6 @@ def get_job(request: Request, job_id: str):
             error=job.error,
             created_at=job.created_at,
         )
-    finally:
-        db.close()
 
 
 @app.post(
@@ -383,8 +371,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
             detail="Generation service unavailable: ANTHROPIC_API_KEY not configured",
         )
 
-    db = get_session()
-    try:
+    with get_session() as db:
         job = db.get(Job, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
@@ -459,8 +446,6 @@ def ask(request: Request, job_id: str, body: AskRequest):
             len(response.citations),
         )
         return response
-    finally:
-        db.close()
 
 
 @app.get(
@@ -470,8 +455,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
 )
 @limiter.limit(read_limit)
 def get_report(request: Request, job_id: str):
-    db = get_session()
-    try:
+    with get_session() as db:
         job = db.get(Job, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
@@ -500,5 +484,3 @@ def get_report(request: Request, job_id: str):
             flags=result.flags,
             report_url=report_url,
         )
-    finally:
-        db.close()

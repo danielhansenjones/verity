@@ -51,6 +51,26 @@ services:
       timeout: 5s
       retries: 10
 
+  init-db:
+    # One-shot schema bootstrap. Exits 0 on success; api and worker depend on
+    # its successful completion, so they only start once the schema is ready.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m scripts.init_db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=postgres
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - .:/app
+
   api:
     build:
       context: .
@@ -69,8 +89,8 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       minio:
@@ -94,8 +114,8 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_BUCKET=${MINIO_BUCKET}
     depends_on:
-      postgres:
-        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       minio:

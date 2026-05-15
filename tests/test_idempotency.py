@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from shared.models import JobDedup
+from tests.conftest import session_factory
 
 
 @pytest.fixture
@@ -18,8 +19,7 @@ def api_env(sqlite_engine):
     mock_queue = MagicMock()
 
     with (
-        patch("api.main.init_db"),
-        patch("api.main.get_session", side_effect=lambda: SessionLocal()),
+        patch("api.main.get_session", session_factory(SessionLocal)),
         patch("api.main.StorageClient", return_value=mock_storage),
         patch("api.main.JobQueue", return_value=mock_queue),
     ):

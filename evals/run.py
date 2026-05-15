@@ -254,8 +254,7 @@ def main() -> None:
 
     embedding_model = EmbeddingModel(device=args.device)
 
-    db = get_session()
-    try:
+    with get_session() as db:
         pdfs = sorted({c["fixture_pdf"] for c in cases})
         logger.info("ensuring %d fixture jobs: %s", len(pdfs), pdfs)
         fixture_jobs = {
@@ -287,8 +286,6 @@ def main() -> None:
 
         logger.info("wrote %s", out_path)
         print(json.dumps(agg, indent=2, default=str))
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":

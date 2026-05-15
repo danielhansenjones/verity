@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.models import Base, Chunk, Job, JobStage, JobStatus
 
 TEST_DOCUMENTS_DIR = Path(__file__).parent / "test_documents"
+
+
+def session_factory(SessionLocal):
+    """Wrap a SessionLocal as a context manager matching production get_session()."""
+
+    @contextmanager
+    def _factory():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    return _factory
 
 
 def reset_api_tables(SessionLocal):

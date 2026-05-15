@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import enum
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from sqlalchemy import (
     DateTime,
@@ -22,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
+    Session,
     mapped_column,
     relationship,
     sessionmaker,
@@ -183,8 +185,13 @@ _engine = create_engine(
 _SessionFactory = sessionmaker(bind=_engine)
 
 
-def get_session():
-    return _SessionFactory()
+@contextmanager
+def get_session() -> Iterator[Session]:
+    session = _SessionFactory()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 def init_db():
@@ -197,12 +204,3 @@ def init_db():
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
     Base.metadata.create_all(_engine)
-
-    if _engine.dialect.name == "postgresql":
-        with _engine.begin() as conn:
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS chunks_embedding_idx "
-                    "ON chunks USING hnsw (embedding vector_cosine_ops)"
-                )
-            )

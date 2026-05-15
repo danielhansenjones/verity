@@ -22,8 +22,7 @@ def main() -> None:
     configure_logging()
     logger = logging.getLogger("backfill_embeddings")
 
-    db = get_session()
-    try:
+    with get_session() as db:
         def pending_query():
             q = db.query(Chunk).filter(Chunk.embedding.is_(None))
             if args.job_id:
@@ -59,8 +58,6 @@ def main() -> None:
             logger.info("backfill: %d / %d", processed, total)
 
         logger.info("backfill: done, %d chunks embedded", processed)
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":
