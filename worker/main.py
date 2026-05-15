@@ -194,7 +194,9 @@ def main():
                 log.exception("worker: job failed")
                 job.error = str(exc)
                 if job.retry_count < job.max_retries:
-                    job.status = JobStatus.RETRYING
+                    # retry_count is the signal that this is a retry; status
+                    # goes back to QUEUED while the new stream entry waits.
+                    job.status = JobStatus.QUEUED
                     job.retry_count += 1
                     # Ack the current entry and enqueue a fresh one; the new
                     # entry resets the idle timer, so transient reclaim storms

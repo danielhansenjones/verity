@@ -36,7 +36,6 @@ class JobStatus(str, enum.Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
-    RETRYING = "retrying"
 
 
 class JobStage(str, enum.Enum):
