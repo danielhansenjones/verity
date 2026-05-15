@@ -9,15 +9,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from worker.processors.clause_labels import CLAUSE_WEIGHTS
+from worker.processors.risk_rules import default_matcher
 from worker.processors.scorer import (
     _apply_risk_patterns,
     _to_tone_score,
     score_chunks,
     run,
-    CLAUSE_WEIGHTS,
     _SEVERITY_SCORES,
 )
-from worker.processors.risk_rules import default_matcher
 from shared.models import Chunk, Job, JobStage, JobStatus
 from tests.conftest import make_tone_pipeline
 

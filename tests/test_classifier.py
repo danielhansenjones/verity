@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from worker.processors.classifier import run, CLAUSE_LABELS, _CONFIDENCE_THRESHOLD
+from worker.processors.classifier import run, _CONFIDENCE_THRESHOLD
+from worker.processors.clause_labels import CLAUSE_LABELS
 from shared.models import Chunk, Job, JobStage, JobStatus
 from tests.conftest import make_classifier_pipeline
 

@@ -9,21 +9,9 @@ from sqlalchemy.orm import Session
 
 from shared.models import Chunk, Job, JobStage
 from shared.settings import settings
+from worker.processors.clause_labels import CLAUSE_LABELS
 
 logger = logging.getLogger(__name__)
-
-CLAUSE_LABELS = [
-    "indemnification",
-    "termination",
-    "liability limitation",
-    "governing law",
-    "payment terms",
-    "intellectual property assignment",
-    "confidentiality",
-    "dispute resolution",
-    "warranty",
-    "force majeure",
-]
 
 # More permissive than the val-tuned category-presence threshold (0.95).
 # Label assignment tolerates false positives: a wrong label is penalized by the

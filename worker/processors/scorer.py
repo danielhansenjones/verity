@@ -5,23 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.models import Chunk, Job, JobStage
+from worker.processors.clause_labels import CLAUSE_WEIGHTS
 from worker.processors.risk_rules import default_matcher
 
 logger = logging.getLogger(__name__)
-
-CLAUSE_WEIGHTS = {
-    "indemnification": 1.0,
-    "liability limitation": 0.9,
-    "intellectual property assignment": 0.8,
-    "termination": 0.7,
-    "dispute resolution": 0.6,
-    "confidentiality": 0.5,
-    "payment terms": 0.5,
-    "warranty": 0.4,
-    "force majeure": 0.3,
-    "governing law": 0.2,
-    "general": 0.1,
-}
 
 _SEVERITY_SCORES = {"high": 1.0, "medium": 0.5, "low": 0.25}
 _BATCH_SIZE = 8
