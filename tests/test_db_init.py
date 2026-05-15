@@ -1,8 +1,7 @@
 """
 Integration test for shared.models.init_db against a fresh pgvector-enabled
-Postgres. Covers the bug where Base.metadata.create_all ran before the vector
-extension existed, and the migration's add_column would then duplicate work
-that create_all had already done on a fresh database.
+Postgres. Verifies that create_all builds the schema correctly when the
+vector extension is created first, including the HNSW index on chunks.embedding.
 
 Spawns a one-shot pgvector container per module like test_redis_integration.
 Skips when the docker CLI is unavailable.
@@ -77,22 +76,8 @@ def pgvector_container():
 
 @pytest.fixture
 def fresh_engine(pgvector_container, monkeypatch):
-    # init_db() reads the module-level _engine for create_all, and alembic's
-    # env.py reads settings.postgres_* to build its own DSN. Point both at the
-    # test container so the two halves of init_db target the same database.
+    # init_db() reads the module-level _engine. Point it at the test container.
     from shared import models
-    from shared.settings import settings
-
-    # postgresql+psycopg2://test:test@127.0.0.1:PORT/test
-    rest = pgvector_container.split("://", 1)[1]
-    userpass, hostpart = rest.split("@", 1)
-    user, password = userpass.split(":", 1)
-    host_port, dbname = hostpart.split("/", 1)
-
-    monkeypatch.setattr(settings, "postgres_user", user)
-    monkeypatch.setattr(settings, "postgres_password", password)
-    monkeypatch.setattr(settings, "postgres_host", host_port)
-    monkeypatch.setattr(settings, "postgres_db", dbname)
 
     test_engine = create_engine(pgvector_container, pool_pre_ping=True)
     monkeypatch.setattr(models, "_engine", test_engine)
@@ -111,9 +96,9 @@ def test_init_db_on_fresh_pgvector_creates_chunks_with_embedding(fresh_engine):
 
 
 def test_init_db_is_idempotent(fresh_engine):
-    # Two back-to-back invocations must succeed. The first creates the schema,
-    # the second exercises the "everything already exists" path that broke when
-    # create_all and alembic disagreed on column ownership.
+    # Two back-to-back invocations must succeed. create_all is a no-op when
+    # the schema already exists; the second call must not raise on duplicate
+    # extension, table, or index.
     from shared.models import init_db
 
     init_db()
@@ -132,15 +117,3 @@ def test_init_db_is_idempotent(fresh_engine):
             )
         ).scalar()
         assert idx == "chunks_embedding_idx"
-
-
-def test_alembic_marks_revision_after_init_db(fresh_engine):
-    from shared.models import init_db
-
-    init_db()
-
-    with fresh_engine.connect() as conn:
-        version = conn.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar()
-        assert version == "0001"

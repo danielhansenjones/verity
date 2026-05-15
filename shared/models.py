@@ -3,7 +3,6 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import (
@@ -157,15 +156,4 @@ def init_db():
         with _engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
-    # create_all bootstraps tables for fresh databases; alembic then layers
-    # incremental schema changes (pgvector column, future evals tables, etc).
-    # Migrations are written idempotently so create_all and alembic upgrade
-    # agree on the steady state.
     Base.metadata.create_all(_engine)
-
-    from alembic import command
-    from alembic.config import Config
-
-    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
-    cfg = Config(str(config_path))
-    command.upgrade(cfg, "head")

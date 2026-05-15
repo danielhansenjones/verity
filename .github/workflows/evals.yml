@@ -10,7 +10,6 @@ on:
       - 'worker/processors/ingestion.py'
       - 'shared/types.py'
       - 'shared/models.py'
-      - 'migrations/**'
       - 'evals/**'
 
 jobs:
@@ -55,9 +54,6 @@ jobs:
             echo "::error::ANTHROPIC_API_KEY secret is not configured. Skip this workflow or add the secret in repo settings."
             exit 1
           fi
-
-      - name: Apply migrations
-        run: uv run alembic upgrade head
 
       - name: Run frozen eval subset
         run: |
