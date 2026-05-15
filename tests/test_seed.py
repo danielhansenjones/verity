@@ -140,10 +140,7 @@ def test_real_document_risk_pattern_scan_runs_cleanly(pdf_filename):
     hits = _apply_risk_patterns(text)
 
     assert isinstance(hits, list)
-    for hit in hits:
-        assert "pattern" in hit
-        assert "severity" in hit
-        assert "reason" in hit
+    # Hit shape is covered exhaustively in tests/test_scorer.py.
 
 
 @pytest.mark.parametrize("pdf_filename", ["Document.pdf", "Document4.pdf"])
