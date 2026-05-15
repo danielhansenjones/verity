@@ -71,10 +71,18 @@ def build_user_prompt(question: str, chunks: list[Chunk]) -> str:
     return f"Question: {question}\n\nRetrieved chunks:\n\n" + "\n\n".join(blocks)
 
 
+_anthropic: Optional[anthropic.Anthropic] = None
+
+
 def _client() -> anthropic.Anthropic:
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    # Module-level singleton: anthropic.Anthropic owns an httpx client with its
+    # own connection pool. Re-instantiating per request defeats the pool.
+    global _anthropic
+    if _anthropic is None:
+        if not settings.anthropic_api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+        _anthropic = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return _anthropic
 
 
 def ask(question: str, chunks: list[Chunk]) -> tuple[AnswerResponse, dict]:
