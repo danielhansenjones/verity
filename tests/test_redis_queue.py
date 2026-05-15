@@ -4,7 +4,7 @@ These tests stub the redis client directly rather than going through conftest's
 module-level redis stub, so they exercise the XADD/XREADGROUP/XACK flow.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,13 +14,12 @@ from shared.settings import settings
 
 @pytest.fixture
 def queue_with_mock_client():
-    with patch("shared.redis_queue.redis.Redis") as redis_cls:
-        client = MagicMock()
-        redis_cls.return_value = client
-        q = JobQueue(consumer_name="test-consumer")
-        # No stale entries by default.
-        client.xautoclaim.return_value = ("0-0", [], [])
-        yield q, client
+    # _redis_client injection bypasses the module-level shared-client
+    # singleton, so each test gets a clean mock without cache leakage.
+    client = MagicMock()
+    client.xautoclaim.return_value = ("0-0", [], [])
+    q = JobQueue(consumer_name="test-consumer", _redis_client=client)
+    yield q, client
 
 
 def test_enqueue_calls_xadd(queue_with_mock_client):

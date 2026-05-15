@@ -11,6 +11,21 @@ logger = logging.getLogger(__name__)
 
 _JOB_FIELD = b"job_id"
 
+# Module-level redis client so JobQueue instances share one connection pool.
+# Building a fresh Redis() per JobQueue allocates a new pool every call site
+# (POST /jobs, /health) which is wasteful under a k8s liveness probe.
+_shared_client: Optional[redis.Redis] = None
+
+
+def _get_shared_client() -> redis.Redis:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = redis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+        )
+    return _shared_client
+
 
 class InFlightJob(NamedTuple):
     """A job claimed from the stream. Must be acked after successful processing."""
@@ -54,10 +69,7 @@ class JobQueue:
         consumer_name: Optional[str] = None,
         _redis_client=None,
     ):
-        self._client = _redis_client or redis.Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-        )
+        self._client = _redis_client or _get_shared_client()
         self._key = settings.job_queue_key
         self._group = settings.job_queue_group
         self._consumer = consumer_name or _default_consumer_name()
