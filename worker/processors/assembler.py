@@ -92,7 +92,7 @@ def run(
 
     report_key = f"{_REPORT_PREFIX}/{job.id}.json"
     storage.upload_json(report_key, report)
-    logger.info("assembler: report uploaded → %s", report_key)
+    logger.info("assembler: report uploaded -> %s", report_key)
 
     result = RiskResult(
         id=str(uuid.uuid4()),
