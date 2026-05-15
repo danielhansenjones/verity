@@ -157,6 +157,14 @@ def grounding_error(
             return f"citation chunk_id {cite.chunk_id} was not in the retrieved set"
 
         cited = chunks_by_id[cite.chunk_id]
+        # Cross-check chunk_index. A model that pairs the right chunk_id with
+        # the wrong index (or vice versa) reveals it's not actually reading
+        # the cited chunk - it's pattern-matching on the marker syntax.
+        if cite.chunk_index != cited.index:
+            return (
+                f"citation chunk_index {cite.chunk_index} does not match"
+                f" the cited chunk's actual index {cited.index}"
+            )
         if _normalize(cite.quote) not in _normalize(cited.text):
             return f"citation quote not found in chunk {cite.chunk_id}"
 

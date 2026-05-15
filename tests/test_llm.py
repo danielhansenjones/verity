@@ -87,6 +87,26 @@ def test_grounding_error_flags_unknown_chunk_id():
     assert "fabricated-id" in err
 
 
+def test_grounding_error_flags_mismatched_chunk_index():
+    # chunk_id is in the retrieved set, but chunk_index does not match the
+    # actual index of that chunk. Reject - the model didn't read the chunk.
+    chunk = _chunk(7, "Delaware law governs.")
+    response = AnswerResponse(
+        answer="Delaware law governs.",
+        citations=[
+            Citation(
+                chunk_id=chunk.id,
+                chunk_index=0,
+                quote="Delaware law governs",
+            )
+        ],
+    )
+
+    err = grounding_error(response, [chunk])
+    assert err is not None
+    assert "chunk_index" in err
+
+
 def test_grounding_error_flags_fabricated_quote():
     chunk = _chunk(0, "Delaware law governs.")
     response = AnswerResponse(
