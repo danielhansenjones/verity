@@ -198,3 +198,12 @@ def init_db():
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
     Base.metadata.create_all(_engine)
+
+    if _engine.dialect.name == "postgresql":
+        with _engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS chunks_embedding_idx "
+                    "ON chunks USING hnsw (embedding vector_cosine_ops)"
+                )
+            )
