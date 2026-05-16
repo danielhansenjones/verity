@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     minio_root_password: str = "minioadmin"
     minio_bucket: str = "contracts"
 
-    # Redis Streams: the stream key, consumer group name, and reclaim threshold.
     # Entries idle for longer than this on a dead consumer are reclaimed via XAUTOCLAIM.
     # Idle threshold must exceed realistic p99 stage duration (zero-shot classification
     # over many chunks on CPU can run several minutes); otherwise a healthy worker's
@@ -40,17 +39,15 @@ class Settings(BaseSettings):
     # Unset disables auth with a startup warning; production deploys must set it.
     contract_api_key: Optional[str] = None
 
-    # Cap on the raw HTTP body of POST /jobs. 25 MiB default.
     max_upload_bytes: int = 26_214_400
 
-    # Per-IP rate limits. slowapi syntax: "<count>/<period>".
     rate_limit_submit: str = "30/minute"
     rate_limit_read: str = "120/minute"
 
-    # Port for the worker's /metrics HTTP server. API metrics ride on the API port.
+    # API metrics ride on the API port.
     worker_metrics_port: int = 9100
 
-    # Span extractor (v2 cascade). Disabled by default until the model is trained.
+    # Disabled by default until the model is trained.
     span_extractor_enabled: bool = False
     span_extractor_model_path: str = ""
     span_extractor_tier1_confidence_threshold: float = 0.7
@@ -60,6 +57,10 @@ class Settings(BaseSettings):
     # the rest of the pipeline (ingest, classify, score, assemble) is unaffected.
     anthropic_api_key: Optional[str] = None
     anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 2048
+    # SDK default is generous; a hung call pins a threadpool slot.
+    anthropic_connect_timeout_s: float = 5.0
+    anthropic_read_timeout_s: float = 60.0
 
     model_config = SettingsConfigDict(env_file=".env")
 

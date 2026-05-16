@@ -3,6 +3,7 @@ import re
 from typing import Optional
 
 import anthropic
+import httpx
 from pydantic import BaseModel, Field
 
 from shared.models import Chunk
@@ -81,7 +82,15 @@ def _client() -> anthropic.Anthropic:
     if _anthropic is None:
         if not settings.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-        _anthropic = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        _anthropic = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key,
+            timeout=httpx.Timeout(
+                connect=settings.anthropic_connect_timeout_s,
+                read=settings.anthropic_read_timeout_s,
+                write=10.0,
+                pool=5.0,
+            ),
+        )
     return _anthropic
 
 
@@ -92,7 +101,7 @@ def ask(question: str, chunks: list[Chunk]) -> tuple[AnswerResponse, dict]:
     # per-call input cost for any RAG burst within the 5-minute cache window.
     msg = _client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=1024,
+        max_tokens=settings.anthropic_max_tokens,
         system=[
             {
                 "type": "text",
@@ -141,8 +150,6 @@ def _normalize(text: str) -> str:
 def grounding_error(
     response: AnswerResponse, chunks: list[Chunk]
 ) -> Optional[str]:
-    # Returns None when the response is correctly grounded, or a human-readable
-    # error string when it is not. Callers translate the error into a 502.
     if response.refusal_reason:
         if response.citations:
             return "refusal response must not include citations"
