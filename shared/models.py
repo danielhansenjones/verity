@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -178,7 +179,8 @@ class RiskResult(Base):
 
 
 _engine = create_engine(
-    f"postgresql+psycopg2://{settings.postgres_user}:{settings.postgres_password}"
+    f"postgresql+psycopg2://{settings.postgres_user}"
+    f":{urllib.parse.quote_plus(settings.postgres_password)}"
     f"@{settings.postgres_host}/{settings.postgres_db}",
     pool_pre_ping=True,
 )
