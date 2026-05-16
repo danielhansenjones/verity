@@ -45,6 +45,13 @@ class StorageClient:
             raise
         return object_key
 
+    def delete_object(self, object_key: str) -> None:
+        try:
+            self._client.remove_object(self._bucket, object_key)
+        except S3Error as exc:
+            logger.error("storage: delete failed key=%s: %s", object_key, exc)
+            raise
+
     def download_bytes(self, object_key: str) -> bytes:
         try:
             response = self._client.get_object(self._bucket, object_key)

@@ -61,7 +61,8 @@ async def lifespan(app: FastAPI):
     # Schema bootstrap is handled out-of-band by scripts/init_db.py (run by
     # the docker-compose init-db service or a CI step). The API process
     # assumes the schema exists by the time the first request lands.
-    #
+    app.state.storage = StorageClient()
+    app.state.queue = JobQueue()
     # Pre-load the embedding model so the first /ask request does not block
     # on a 5-10 s sentence-transformer initialisation. Skipped when /ask is
     # going to return 503 anyway (ANTHROPIC_API_KEY unset) so dev startup
@@ -77,6 +78,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Contract Risk Pipeline", lifespan=lifespan)
 app.state.limiter = limiter
+
+
+def get_storage(request: Request) -> StorageClient:
+    return request.app.state.storage
+
+
+def get_queue(request: Request) -> JobQueue:
+    return request.app.state.queue
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -164,7 +173,7 @@ def metrics():
 
 
 @app.get("/health")
-def health():
+def health(request: Request):
     try:
         with get_session() as db:
             db.execute(text("SELECT 1"))
@@ -173,17 +182,19 @@ def health():
         db_ok = False
 
     try:
-        queue = JobQueue()
-        queue.ping()
+        request.app.state.queue.ping()
         redis_ok = True
     except Exception:
         redis_ok = False
 
     healthy = db_ok and redis_ok
-    return {
-        "status": "ok" if healthy else "degraded",
-        "services": {"postgres": db_ok, "redis": redis_ok},
-    }
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ok" if healthy else "degraded",
+            "services": {"postgres": db_ok, "redis": redis_ok},
+        },
+    )
 
 
 def _dedup_key(client_key: Optional[str], pdf_bytes: bytes) -> str:
@@ -200,11 +211,13 @@ def _dedup_key(client_key: Optional[str], pdf_bytes: bytes) -> str:
     dependencies=[Depends(require_api_key)],
 )
 @limiter.limit(submit_limit)
-async def submit_job(
+def submit_job(
     request: Request,
     response: Response,
     file: UploadFile = File(...),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    storage: StorageClient = Depends(get_storage),
+    queue: JobQueue = Depends(get_queue),
 ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
@@ -215,7 +228,7 @@ async def submit_job(
             detail="Only PDF files are accepted (Content-Type must be application/pdf)",
         )
 
-    pdf_bytes = await file.read()
+    pdf_bytes = file.file.read()
 
     # Defensive: Content-Length can be forged or absent; verify actual body size.
     if len(pdf_bytes) > settings.max_upload_bytes:
@@ -244,13 +257,8 @@ async def submit_job(
     job_id = str(uuid.uuid4())
     object_key = f"{_RAW_PREFIX}/{job_id}.pdf"
 
-    try:
-        storage = StorageClient()
-        storage.upload_bytes(object_key, pdf_bytes, content_type="application/pdf")
-    except S3Error as exc:
-        logger.error("api: storage upload failed for job %s: %s", job_id, exc)
-        raise HTTPException(status_code=503, detail="Storage service unavailable")
-
+    # Commit before upload so a commit failure (or dedup loss) doesn't leave
+    # an orphan blob with no DB row pointing at it.
     with get_session() as db:
         job = Job(
             id=job_id,
@@ -266,7 +274,6 @@ async def submit_job(
         try:
             db.commit()
         except IntegrityError:
-            # Concurrent submission won the dedup race; return the winner.
             db.rollback()
             existing = db.query(JobDedup).filter(JobDedup.key == dedup_key).first()
             if existing is not None:
@@ -287,10 +294,30 @@ async def submit_job(
             raise
 
     try:
-        queue = JobQueue()
+        storage.upload_bytes(object_key, pdf_bytes, content_type="application/pdf")
+    except S3Error as exc:
+        # Upload failed: blob never wrote. Roll back the DB rows so a client
+        # retry isn't a confused dedup replay against a job that points
+        # nowhere.
+        logger.error("api: storage upload failed for job %s: %s", job_id, exc)
+        _delete_pending(job_id, dedup_key)
+        raise HTTPException(status_code=503, detail="Storage service unavailable")
+
+    try:
         queue.enqueue(job_id)
     except redis.ConnectionError as exc:
+        # Enqueue failed after both DB and blob committed: roll back both so
+        # the job doesn't sit forever in QUEUED with no worker entry.
         logger.error("api: failed to enqueue job %s: %s", job_id, exc)
+        try:
+            storage.delete_object(object_key)
+        except S3Error:
+            logger.warning(
+                "api: orphan blob cleanup failed for job %s; key=%s",
+                job_id,
+                object_key,
+            )
+        _delete_pending(job_id, dedup_key)
         raise HTTPException(status_code=503, detail="Queue service unavailable")
 
     jobs_submitted_total.labels(outcome="created").inc()
@@ -298,6 +325,13 @@ async def submit_job(
     return JobCreatedResponse(
         job_id=job_id, status=JobStatus.QUEUED, filename=file.filename
     )
+
+
+def _delete_pending(job_id: str, dedup_key: str) -> None:
+    with get_session() as db:
+        db.query(JobDedup).filter(JobDedup.key == dedup_key).delete()
+        db.query(Job).filter(Job.id == job_id).delete()
+        db.commit()
 
 
 @app.get(
@@ -454,7 +488,11 @@ def ask(request: Request, job_id: str, body: AskRequest):
     dependencies=[Depends(require_api_key)],
 )
 @limiter.limit(read_limit)
-def get_report(request: Request, job_id: str):
+def get_report(
+    request: Request,
+    job_id: str,
+    storage: StorageClient = Depends(get_storage),
+):
     with get_session() as db:
         job = db.get(Job, job_id)
         if job is None:
@@ -471,8 +509,13 @@ def get_report(request: Request, job_id: str):
         result = db.query(RiskResult).filter(RiskResult.job_id == job_id).first()
         if result is None:
             raise HTTPException(status_code=404, detail="Report not found")
+        if result.report_key is None:
+            # Partial assembler write: DB row committed before MinIO upload.
+            raise HTTPException(
+                status_code=404,
+                detail="Report blob not available (partial write)",
+            )
 
-        storage = StorageClient()
         report_url = storage.presigned_url(result.report_key, expires_seconds=3600)
 
         return ReportResponse(
