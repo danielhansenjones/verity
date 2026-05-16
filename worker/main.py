@@ -209,28 +209,36 @@ def main():
                             log.exception("worker: job failed")
                             job.error = str(exc)
                             if job.retry_count < job.max_retries:
-                                # retry_count is the signal that this is a retry;
-                                # status goes back to QUEUED while the new stream
-                                # entry waits.
                                 job.status = JobStatus.QUEUED
                                 job.retry_count += 1
-                                # Ack the current entry and enqueue a fresh one;
-                                # the new entry resets the idle timer, so
-                                # transient reclaim storms cannot double-process
-                                # retries.
-                                queue.enqueue(job_id)
-                                log.info(
-                                    "worker: job re-queued (attempt %d/%d)",
-                                    job.retry_count,
-                                    job.max_retries,
-                                )
                             else:
                                 job.status = JobStatus.FAILED
                                 jobs_completed_total.labels(status="failed").inc()
                                 log.error(
                                     "worker: job exhausted retries, marked failed"
                                 )
+                            # Commit before enqueue: a stream entry pointing
+                            # at an uncommitted retry would race the next
+                            # consumer past the idempotency guard.
                             db.commit()
+
+                            if job.status == JobStatus.QUEUED:
+                                try:
+                                    queue.enqueue(job_id)
+                                    log.info(
+                                        "worker: job re-queued (attempt %d/%d)",
+                                        job.retry_count,
+                                        job.max_retries,
+                                    )
+                                except Exception:
+                                    # Leave entry unacked so XAUTOCLAIM
+                                    # retries against the durable retry state.
+                                    log.exception(
+                                        "worker: re-enqueue failed; leaving"
+                                        " entry %s unacked",
+                                        entry_id,
+                                    )
+                                    should_ack = False
         except Exception:
             # Unexpected error outside the stage handlers (db commit, etc).
             # Leave the entry unacked so XAUTOCLAIM can hand it off.
