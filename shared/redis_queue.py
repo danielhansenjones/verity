@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+import threading
 from typing import NamedTuple, Optional, Union, cast
 
 import redis
@@ -15,16 +16,22 @@ _JOB_FIELD = b"job_id"
 # Building a fresh Redis() per JobQueue allocates a new pool every call site
 # (POST /jobs, /health) which is wasteful under a k8s liveness probe.
 _shared_client: Optional[redis.Redis] = None
+_shared_client_lock = threading.Lock()
 
 
 def _get_shared_client() -> redis.Redis:
     global _shared_client
-    if _shared_client is None:
-        _shared_client = redis.Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-        )
-    return _shared_client
+    if _shared_client is not None:
+        return _shared_client
+    # Double-checked: avoid two pools under concurrent first-use from the
+    # FastAPI threadpool.
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = redis.Redis(
+                host=settings.redis_host,
+                port=settings.redis_port,
+            )
+        return _shared_client
 
 
 class InFlightJob(NamedTuple):
@@ -194,7 +201,7 @@ class JobQueue:
         entry_id_s = _decode(entry_id)
         value = fields.get(_JOB_FIELD) or fields.get("job_id")
         if value is None:
-            # Malformed entry; ack and move on.
+            # Malformed entry.
             self.ack(entry_id_s)
             return None
 
