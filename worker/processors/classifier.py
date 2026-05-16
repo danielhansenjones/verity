@@ -36,9 +36,13 @@ def run(
     classifier_pipeline,
     span_extractor=None,
 ) -> None:
+    # Resume-safe: skip chunks already labelled by a prior crashed attempt.
     chunks: list[Chunk] = list(
         db.scalars(
-            select(Chunk).where(Chunk.job_id == job.id).order_by(Chunk.index)
+            select(Chunk)
+            .where(Chunk.job_id == job.id)
+            .where(Chunk.clause_type.is_(None))
+            .order_by(Chunk.index)
         ).all()
     )
     logger.info("classifier: job=%s chunks=%d", job.id, len(chunks))
