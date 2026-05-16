@@ -24,10 +24,6 @@ from shared.models import Base, Job, JobDedup, JobStage, JobStatus
 from shared.redis_queue import DeadLetter, InFlightJob, JobQueue
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
@@ -62,10 +58,6 @@ def _make_queue(
     q._group_ready = False
     return q
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def redis_container():
@@ -117,10 +109,6 @@ def sqlite_session_factory():
     yield sessionmaker(bind=engine)
     engine.dispose()
 
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestHappyPath:
     def test_enqueue_dequeue_ack_clears_pel(self, rc, stream, group):

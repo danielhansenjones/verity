@@ -34,7 +34,6 @@ def prepare_train_features(
         cls_index = input_ids.index(tokenizer.cls_token_id)
 
         sequence_ids = tokenized.sequence_ids(i)
-        # Find the context token range within this window
         context_start = next(
             (j for j, s in enumerate(sequence_ids) if s == 1), None
         )
@@ -50,7 +49,6 @@ def prepare_train_features(
         char_start = answer_start
         char_end = answer_start + len(answer_text)
 
-        # If the answer falls outside the current window, label as no-answer
         if (
             offsets[context_start][0] > char_start
             or offsets[context_end][1] < char_end

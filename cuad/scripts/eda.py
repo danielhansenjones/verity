@@ -50,7 +50,6 @@ def main() -> None:
 
     df["split"] = df["contract_id"].map(split_label)
 
-    # Per-category positive span counts by split
     positives = df[~df["is_impossible"]]
     counts = (
         positives.groupby(["category", "split"])
@@ -63,7 +62,6 @@ def main() -> None:
         json.dump(counts_dict, f, indent=2)
     print(f"Per-category counts: {len(counts_dict)} categories")
 
-    # Low-N categories (< LOW_N_THRESHOLD positive spans in test set)
     low_n = sorted(
         cat for cat, row in counts.iterrows() if row.get("test", 0) < LOW_N_THRESHOLD
     )
@@ -71,7 +69,6 @@ def main() -> None:
         json.dump(low_n, f, indent=2)
     print(f"Low-N categories (<{LOW_N_THRESHOLD} test positives): {len(low_n)}")
 
-    # Per-category train vs test bar chart
     categories = sorted(counts.index)
     x = range(len(categories))
     fig, ax = plt.subplots(figsize=(18, 6))
@@ -97,7 +94,6 @@ def main() -> None:
     plt.close(fig)
     print("Saved per_category_train_test.png")
 
-    # Context token length distribution (sample up to 2000 unique contracts for speed)
     unique_contexts = df.drop_duplicates("contract_id")["context"].tolist()
     sample = unique_contexts[:2000]
     ctx_lengths = []
@@ -117,7 +113,6 @@ def main() -> None:
     plt.close(fig)
     print("Saved context_token_length_dist.png")
 
-    # Answer token length distribution
     ans_texts = positives["answer_text"].tolist()
     sample_ans = ans_texts[:5000]
     ans_lengths = []

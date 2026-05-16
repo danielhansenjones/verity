@@ -42,12 +42,10 @@ def aggregate_predictions(
             end_logits = feat["end_logits"]
             offset_mapping = feat["offset_mapping"]
 
-            # null (CLS) score
             cls_score = start_logits[0] + end_logits[0]
             if min_null_score is None or cls_score < min_null_score:
                 min_null_score = cls_score
 
-            # collect valid start/end combinations
             start_indices = np.argsort(start_logits)[-n_best_size:][::-1].tolist()
             end_indices = np.argsort(end_logits)[-n_best_size:][::-1].tolist()
 

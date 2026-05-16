@@ -41,8 +41,6 @@ def run(
     flags = []
     for chunk in scored_chunks:
         for hit in chunk["flags"]:
-            # Quote the extracted span when available; otherwise quote the
-            # surrounding context from the full chunk text
             if chunk.get("extracted_span"):
                 excerpt = chunk["extracted_span"]
                 evidence_source = "extracted_span"

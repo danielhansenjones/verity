@@ -45,7 +45,6 @@ def _score_prediction(
 ) -> tuple[float, float]:
     """Returns (f1, em) for one (prediction, gold) pair."""
     if is_impossible:
-        # gold is no-answer
         if pred_text is None:
             return 1.0, 1.0
         return 0.0, 0.0
@@ -53,7 +52,6 @@ def _score_prediction(
     if pred_text is None:
         return 0.0, 0.0
 
-    # Match against the best gold span
     best_f1 = max(_token_f1(pred_text, g) for g in gold_spans)
     best_em = max(_exact_match(pred_text, g) for g in gold_spans)
     return best_f1, best_em
