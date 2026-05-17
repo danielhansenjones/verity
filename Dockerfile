@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# Pin HF cache to a path we can chown to appuser; default /root/.cache becomes
+# unreadable once we drop privileges.
+ENV HF_HOME=/opt/hf_cache
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
@@ -23,3 +26,7 @@ pipeline('zero-shot-classification', model='facebook/bart-large-mnli'); \
 pipeline('text-classification', model='distilbert-base-uncased-finetuned-sst-2-english')"
 
 COPY . .
+
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app /opt/venv /opt/hf_cache
+USER appuser
