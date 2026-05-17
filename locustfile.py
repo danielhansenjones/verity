@@ -46,7 +46,7 @@ import uuid
 from locust import HttpUser, between, constant, events, task
 
 _API_KEY = os.getenv("CONTRACT_API_KEY", "")
-_POLL_INTERVAL_S = 10
+_POLL_INTERVAL_S = 2
 _POLL_TIMEOUT_S = 600  # 10 minutes
 
 with open("tests/test_documents/Document.pdf", "rb") as _f:

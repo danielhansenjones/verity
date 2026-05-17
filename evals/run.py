@@ -12,6 +12,7 @@ shared.settings.anthropic_model points at (claude-sonnet-4-6 by default).
 import argparse
 import json
 import logging
+import sys
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -24,6 +25,7 @@ from api.rag import embed_query, retrieve
 from evals import judges
 from shared.logging_config import configure_logging
 from shared.models import Chunk, Job, JobStage, JobStatus, get_session
+from shared.settings import settings
 from worker.processors import ingestion
 from worker.processors.embeddings import EmbeddingModel
 
@@ -32,6 +34,8 @@ _DATASET_PATH = Path(__file__).parent / "dataset.jsonl"
 _FIXTURE_DIR = Path(__file__).parent.parent / "tests" / "test_documents"
 _CACHE_PATH = Path(__file__).parent / ".fixture_cache.json"
 _RESULTS_DIR = Path(__file__).parent / "results"
+
+logger = logging.getLogger("evals.run")
 
 # Rough per-case price floor. 1 generation (sonnet) + 3 judge calls (haiku).
 # Used only to decide whether to require --confirm-cost.
@@ -118,11 +122,13 @@ def _run_case(case: dict, fixture_jobs: dict[str, str], db, judge_model: str) ->
         query_vec = embed_query(case["question"])
         chunks = retrieve(db, fixture_jobs[case["fixture_pdf"]], query_vec, k=8)
     except Exception as exc:
+        logger.exception("eval: case %s failed during retrieval", case_id)
         return {"case_id": case_id, "error": f"retrieval failed: {exc}"}
 
     try:
         response, usage = llm_ask(case["question"], chunks)
     except Exception as exc:
+        logger.exception("eval: case %s failed during generation", case_id)
         return {"case_id": case_id, "error": f"generation failed: {exc}"}
 
     chunks_by_id = {c.id: c for c in chunks}
@@ -236,7 +242,12 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_logging()
-    logger = logging.getLogger("evals.run")
+
+    if not settings.anthropic_api_key:
+        logger.error(
+            "eval: ANTHROPIC_API_KEY is not configured; aborting before any work."
+        )
+        sys.exit(1)
 
     cases = _load_cases(args.dataset, args.limit)
     est_cost = len(cases) * _EST_COST_PER_CASE
@@ -286,6 +297,14 @@ def main() -> None:
 
         logger.info("wrote %s", out_path)
         print(json.dumps(agg, indent=2, default=str))
+
+        n_err = sum(1 for r in results if "error" in r)
+        if n_err:
+            logger.error(
+                "eval: %d of %d cases errored; report at %s",
+                n_err, len(results), out_path,
+            )
+            sys.exit(1)
 
 
 if __name__ == "__main__":

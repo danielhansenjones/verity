@@ -13,3 +13,4 @@ cuad/data/
 cuad/artifacts/
 evals/.fixture_cache.json
 evals/results/
+/scripts/secret-run
