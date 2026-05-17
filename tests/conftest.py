@@ -104,7 +104,7 @@ def make_classifier_pipeline(label: str = "indemnification", score: float = 0.85
 
 
 def make_tone_pipeline(label: str = "NEGATIVE", score: float = 0.9):
-    def _pipeline(texts, batch_size=None):
+    def _pipeline(texts, batch_size=None, truncation=False):
         if isinstance(texts, str):
             texts = [texts]
         return [{"label": label, "score": score} for _ in texts]

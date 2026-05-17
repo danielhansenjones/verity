@@ -36,14 +36,14 @@ def _to_tone_score(result: dict) -> float:
 
 
 def score_chunks(chunks: list[Chunk], tone_pipeline) -> list[dict]:
-    texts = [c.text[:512] for c in chunks]  # truncate to avoid token overflow
-    tone_results = tone_pipeline(texts, batch_size=_BATCH_SIZE)
+    # truncation=True: HF tokenizer truncates at the model's 512-token limit.
+    # Slicing chunk.text[:512] was characters, not tokens.
+    texts = [c.text for c in chunks]
+    tone_results = tone_pipeline(texts, batch_size=_BATCH_SIZE, truncation=True)
     tone_scores = [_to_tone_score(r) for r in tone_results]
 
     scored = []
     for chunk, ts in zip(chunks, tone_scores):
-        # Use extracted span for rule matching when available for higher precision;
-        # fall back to full chunk text otherwise
         rule_text = chunk.extracted_span if chunk.extracted_span else chunk.text
         hits = _apply_risk_patterns(rule_text)
 
