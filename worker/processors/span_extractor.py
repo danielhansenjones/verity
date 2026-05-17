@@ -1,28 +1,20 @@
+import json
+import os
+
 import torch
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 
 from cuad.src.span_aggregation import aggregate_predictions
 
 
-def _question(category: str) -> str:
-    return f'Highlight the parts (if any) related to "{category}"'
+# Verbatim training-time questions. A hand-written template at inference
+# time prompts the model with a question shape it never saw during fine-tune.
+_QUESTIONS_PATH = os.path.join(
+    os.path.dirname(__file__), "cuad_questions.json"
+)
 
-
-_QUESTIONS = {cat: _question(cat) for cat in [
-    "Termination For Convenience",
-    "Notice Period To Terminate Renewal",
-    "Cap On Liability",
-    "Uncapped Liability",
-    "IP Ownership Assignment",
-    "Joint IP Ownership",
-    "Governing Law",
-    "Renewal Term",
-    "Auto Renewal",
-    "Third Party Beneficiary",
-    "Exclusivity",
-    "Non-Compete",
-    "Confidentiality",
-]}
+with open(_QUESTIONS_PATH) as _f:
+    _QUESTIONS: dict[str, str] = json.load(_f)
 
 
 class SpanExtractor:
@@ -52,10 +44,7 @@ class SpanExtractor:
         results = {}
 
         for category in cuad_categories:
-            question = _QUESTIONS.get(
-                category, f"Highlight the parts related to \"{category}\""
-            )
-            pred = self._run_qa(question, chunk_text)
+            pred = self._run_qa(_QUESTIONS[category], chunk_text)
             results[category] = pred
 
         return results
