@@ -21,6 +21,8 @@ def rag_env(sqlite_engine, monkeypatch):
     with (
         patch("api.main.preload_embedding_model"),
         patch("api.main.get_session", session_factory(SessionLocal)),
+        patch("api.main.StorageClient", return_value=MagicMock()),
+        patch("api.main.JobQueue", return_value=MagicMock()),
     ):
         from api.main import app
         from api.rate_limit import limiter
