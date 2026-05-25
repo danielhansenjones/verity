@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from api.llm import AnswerResponse, Citation
-from shared.models import Chunk, Job, JobStage, JobStatus
+from shared.models import Chunk, Job, JobStage, JobStatus, RagQuery
 from tests.conftest import reset_api_tables, session_factory
 
 
@@ -286,6 +286,92 @@ def test_ask_returns_502_when_llm_call_raises(rag_env):
 
     assert resp.status_code == 502
     assert "generation failed" in resp.json()["detail"].lower()
+
+
+def test_ask_persists_rag_query_on_answer(rag_env):
+    client, SessionLocal = rag_env
+    job_id = _seed_job(SessionLocal, status=JobStatus.COMPLETED)
+    chunks = _seed_chunks(
+        SessionLocal, job_id, ["Delaware law governs this agreement."]
+    )
+
+    fake_answer = AnswerResponse(
+        answer="Delaware law governs.",
+        citations=[
+            Citation(
+                chunk_id=chunks[0].id, chunk_index=0, quote="Delaware law governs"
+            )
+        ],
+    )
+    fake_usage = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 5,
+        "cache_creation_input_tokens": 0,
+    }
+
+    with (
+        patch("api.main.embed_query", return_value=[0.0] * 384),
+        patch("api.main.retrieve", return_value=chunks),
+        patch("api.main.llm_ask", return_value=(fake_answer, fake_usage)),
+    ):
+        resp = client.post(
+            f"/jobs/{job_id}/ask", json={"question": "What is the governing law?"}
+        )
+
+    assert resp.status_code == 200
+
+    with SessionLocal() as session:
+        rows = session.query(RagQuery).filter(RagQuery.job_id == job_id).all()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.outcome == "answered"
+    assert row.question == "What is the governing law?"
+    assert row.retrieved_chunk_ids == [chunks[0].id]
+    assert row.answer == "Delaware law governs."
+    assert row.citations[0]["chunk_id"] == chunks[0].id
+    assert row.input_tokens == 100
+    assert row.cache_read_tokens == 5
+    assert row.grounding_error is None
+    assert row.error is None
+
+
+def test_ask_persists_rag_query_on_grounding_failure(rag_env):
+    client, SessionLocal = rag_env
+    job_id = _seed_job(SessionLocal, status=JobStatus.COMPLETED)
+    chunks = _seed_chunks(SessionLocal, job_id, ["Delaware law governs."])
+
+    fake_answer = AnswerResponse(
+        answer="The cap is five million dollars.",
+        citations=[
+            Citation(
+                chunk_id=chunks[0].id,
+                chunk_index=0,
+                quote="five million dollar cap",
+            )
+        ],
+    )
+    fake_usage = {"input_tokens": 100, "output_tokens": 30}
+
+    with (
+        patch("api.main.embed_query", return_value=[0.0] * 384),
+        patch("api.main.retrieve", return_value=chunks),
+        patch("api.main.llm_ask", return_value=(fake_answer, fake_usage)),
+    ):
+        resp = client.post(
+            f"/jobs/{job_id}/ask", json={"question": "What is the cap?"}
+        )
+
+    assert resp.status_code == 502
+
+    with SessionLocal() as session:
+        rows = session.query(RagQuery).filter(RagQuery.job_id == job_id).all()
+
+    assert len(rows) == 1
+    assert rows[0].outcome == "error"
+    assert rows[0].grounding_error is not None
+    assert rows[0].input_tokens == 100
 
 
 def test_ask_clamps_top_k_to_max_via_retrieve(rag_env):

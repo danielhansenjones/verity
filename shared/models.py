@@ -178,6 +178,46 @@ class RiskResult(Base):
         )
 
 
+class RagQuery(Base):
+    __tablename__ = "rag_queries"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id"), index=True
+    )
+    question: Mapped[str] = mapped_column(Text)
+    top_k: Mapped[int] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(String)
+    outcome: Mapped[str] = mapped_column(String)
+    # Ordered, relevance-ranked chunk ids fed to the model. Chunks are immutable
+    # after ingestion, so this reconstructs the exact prompt without copying text.
+    retrieved_chunk_ids: Mapped[list[Any]] = mapped_column(JSON)
+    answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    refusal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    citations: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
+    grounding_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_creation_tokens: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    retrieval_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    generation_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"RagQuery(id={self.id!r}, job_id={self.job_id!r},"
+            f" outcome={self.outcome!r})"
+        )
+
+
 _engine = create_engine(
     f"postgresql+psycopg2://{settings.postgres_user}"
     f":{urllib.parse.quote_plus(settings.postgres_password)}"

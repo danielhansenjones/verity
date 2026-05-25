@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ from shared.models import (
     JobDedup,
     JobStage,
     JobStatus,
+    RagQuery,
     RiskResult,
     get_session,
 )
@@ -384,6 +386,56 @@ def get_job(request: Request, job_id: str):
         )
 
 
+def _log_rag_query(
+    db,
+    *,
+    job_id: str,
+    question: str,
+    top_k: int,
+    outcome: str,
+    chunk_ids: list[str],
+    response: Optional[AnswerResponse] = None,
+    usage: Optional[dict] = None,
+    grounding_err: Optional[str] = None,
+    error: Optional[str] = None,
+    retrieval_ms: Optional[int] = None,
+    generation_ms: Optional[int] = None,
+) -> None:
+    # Best-effort: a failure to persist the audit row must never turn a good
+    # answer into an error. Swallow but log loudly, then let the request finish.
+    usage = usage or {}
+    try:
+        db.add(
+            RagQuery(
+                job_id=job_id,
+                question=question,
+                top_k=top_k,
+                model=settings.anthropic_model,
+                outcome=outcome,
+                retrieved_chunk_ids=chunk_ids,
+                answer=response.answer if response else None,
+                refusal_reason=response.refusal_reason if response else None,
+                citations=(
+                    [c.model_dump() for c in response.citations]
+                    if response
+                    else None
+                ),
+                grounding_error=grounding_err,
+                error=error,
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                cache_read_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_tokens=usage.get("cache_creation_input_tokens"),
+                retrieval_ms=retrieval_ms,
+                generation_ms=generation_ms,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("api: failed to persist rag_query job_id=%s", job_id)
+
+
 @app.post(
     "/jobs/{job_id}/ask",
     response_model=AnswerResponse,
@@ -418,16 +470,20 @@ def ask(request: Request, job_id: str, body: AskRequest):
                 ),
             )
 
+        t_retrieval = time.perf_counter()
         with rag_retrieval_latency_seconds.time():
             query_vec = embed_query(body.question)
             chunks = retrieve(db, job_id, query_vec, k=body.top_k)
+        retrieval_ms = int((time.perf_counter() - t_retrieval) * 1000)
+
+        chunk_ids = [c.id for c in chunks]
 
         if not chunks:
             rag_questions_total.labels(outcome="refused").inc()
             logger.info(
                 "api: rag refused job_id=%s reason=no_embedded_chunks", job_id
             )
-            return AnswerResponse(
+            refusal = AnswerResponse(
                 answer="",
                 citations=[],
                 refusal_reason=(
@@ -435,13 +491,36 @@ def ask(request: Request, job_id: str, body: AskRequest):
                     " Run scripts/backfill_embeddings.py."
                 ),
             )
+            _log_rag_query(
+                db,
+                job_id=job_id,
+                question=body.question,
+                top_k=body.top_k,
+                outcome="refused",
+                chunk_ids=chunk_ids,
+                response=refusal,
+                retrieval_ms=retrieval_ms,
+            )
+            return refusal
 
         try:
+            t_generation = time.perf_counter()
             with rag_generation_latency_seconds.time():
                 response, usage = llm_ask(body.question, chunks)
+            generation_ms = int((time.perf_counter() - t_generation) * 1000)
         except Exception as exc:
             rag_questions_total.labels(outcome="error").inc()
             logger.exception("api: rag generation failed job_id=%s", job_id)
+            _log_rag_query(
+                db,
+                job_id=job_id,
+                question=body.question,
+                top_k=body.top_k,
+                outcome="error",
+                chunk_ids=chunk_ids,
+                error=str(exc),
+                retrieval_ms=retrieval_ms,
+            )
             raise HTTPException(
                 status_code=502, detail=f"Generation failed: {exc}"
             )
@@ -463,6 +542,19 @@ def ask(request: Request, job_id: str, body: AskRequest):
             logger.warning(
                 "api: rag grounding failed job_id=%s err=%s", job_id, err
             )
+            _log_rag_query(
+                db,
+                job_id=job_id,
+                question=body.question,
+                top_k=body.top_k,
+                outcome="error",
+                chunk_ids=chunk_ids,
+                response=response,
+                usage=usage,
+                grounding_err=err,
+                retrieval_ms=retrieval_ms,
+                generation_ms=generation_ms,
+            )
             raise HTTPException(
                 status_code=502,
                 detail=f"Generation produced ungrounded output: {err}",
@@ -478,6 +570,18 @@ def ask(request: Request, job_id: str, body: AskRequest):
             usage["input_tokens"],
             usage["output_tokens"],
             len(response.citations),
+        )
+        _log_rag_query(
+            db,
+            job_id=job_id,
+            question=body.question,
+            top_k=body.top_k,
+            outcome=outcome,
+            chunk_ids=chunk_ids,
+            response=response,
+            usage=usage,
+            retrieval_ms=retrieval_ms,
+            generation_ms=generation_ms,
         )
         return response
 

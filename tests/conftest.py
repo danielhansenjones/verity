@@ -41,11 +41,12 @@ def reset_api_tables(SessionLocal):
     submit via the API need a clean slate per test to keep assertions stable.
     """
     # Late import avoids a circular import at module load.
-    from shared.models import JobDedup, RiskResult
+    from shared.models import JobDedup, RagQuery, RiskResult
 
     with SessionLocal() as session:
         session.query(JobDedup).delete()
         session.query(RiskResult).delete()
+        session.query(RagQuery).delete()
         session.query(Chunk).delete()
         session.query(Job).delete()
         session.commit()
