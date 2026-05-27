@@ -1,6 +1,8 @@
-# Contract Risk Pipeline
+# Verity
 
-[![CI](https://github.com/danielhansenjones/contract_risk_pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/danielhansenjones/contract_risk_pipeline/actions/workflows/ci.yml)
+> Fault-Tolerant Contract-Risk Pipeline with Grounded RAG and LLM-as-Judge Evals
+
+[![CI](https://github.com/danielhansenjones/verity/actions/workflows/ci.yml/badge.svg)](https://github.com/danielhansenjones/verity/actions/workflows/ci.yml)
 
 ```
 ingestion -> classification -> scoring -> assembly
