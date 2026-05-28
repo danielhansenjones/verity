@@ -35,6 +35,7 @@ from shared.logging_config import configure_logging
 from shared.metrics import (
     jobs_submitted_total,
     rag_generation_latency_seconds,
+    rag_query_log_failures_total,
     rag_questions_total,
     rag_retrieval_latency_seconds,
     rag_tokens_total,
@@ -167,6 +168,20 @@ class JobListItem(BaseModel):
 class AskRequest(BaseModel):
     question: str
     top_k: int = 8
+
+
+class RagQueryListItem(BaseModel):
+    id: str
+    job_id: str
+    question: str
+    outcome: str
+    retrieval_ms: Optional[int]
+    generation_ms: Optional[int]
+    input_tokens: Optional[int]
+    output_tokens: Optional[int]
+    grounding_error: Optional[str]
+    error: Optional[str]
+    created_at: datetime
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -400,13 +415,17 @@ def _log_rag_query(
     error: Optional[str] = None,
     retrieval_ms: Optional[int] = None,
     generation_ms: Optional[int] = None,
-) -> None:
+) -> Optional[str]:
     # Best-effort: a failure to persist the audit row must never turn a good
     # answer into an error. Swallow but log loudly, then let the request finish.
+    # Returns the persisted RagQuery.id (the X-Trace-Id surfaced to the caller)
+    # or None when the write failed.
     usage = usage or {}
+    rag_query_id = str(uuid.uuid4())
     try:
         db.add(
             RagQuery(
+                id=rag_query_id,
                 job_id=job_id,
                 question=question,
                 top_k=top_k,
@@ -431,9 +450,12 @@ def _log_rag_query(
             )
         )
         db.commit()
+        return rag_query_id
     except Exception:
         db.rollback()
+        rag_query_log_failures_total.inc()
         logger.exception("api: failed to persist rag_query job_id=%s", job_id)
+        return None
 
 
 @app.post(
@@ -442,7 +464,12 @@ def _log_rag_query(
     dependencies=[Depends(require_api_key)],
 )
 @limiter.limit(read_limit)
-def ask(request: Request, job_id: str, body: AskRequest):
+def ask(
+    request: Request,
+    http_response: Response,
+    job_id: str,
+    body: AskRequest,
+):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
     if len(body.question) > 2000:
@@ -491,7 +518,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
                     " Run scripts/backfill_embeddings.py."
                 ),
             )
-            _log_rag_query(
+            rag_query_id = _log_rag_query(
                 db,
                 job_id=job_id,
                 question=body.question,
@@ -501,6 +528,8 @@ def ask(request: Request, job_id: str, body: AskRequest):
                 response=refusal,
                 retrieval_ms=retrieval_ms,
             )
+            if rag_query_id:
+                http_response.headers["X-Trace-Id"] = rag_query_id
             return refusal
 
         try:
@@ -511,7 +540,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
         except Exception as exc:
             rag_questions_total.labels(outcome="error").inc()
             logger.exception("api: rag generation failed job_id=%s", job_id)
-            _log_rag_query(
+            rag_query_id = _log_rag_query(
                 db,
                 job_id=job_id,
                 question=body.question,
@@ -522,7 +551,9 @@ def ask(request: Request, job_id: str, body: AskRequest):
                 retrieval_ms=retrieval_ms,
             )
             raise HTTPException(
-                status_code=502, detail=f"Generation failed: {exc}"
+                status_code=502,
+                detail=f"Generation failed: {exc}",
+                headers={"X-Trace-Id": rag_query_id} if rag_query_id else None,
             )
 
         rag_tokens_total.labels(direction="in").inc(usage["input_tokens"])
@@ -542,7 +573,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
             logger.warning(
                 "api: rag grounding failed job_id=%s err=%s", job_id, err
             )
-            _log_rag_query(
+            rag_query_id = _log_rag_query(
                 db,
                 job_id=job_id,
                 question=body.question,
@@ -558,6 +589,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
             raise HTTPException(
                 status_code=502,
                 detail=f"Generation produced ungrounded output: {err}",
+                headers={"X-Trace-Id": rag_query_id} if rag_query_id else None,
             )
 
         outcome = "refused" if response.refusal_reason else "answered"
@@ -571,7 +603,7 @@ def ask(request: Request, job_id: str, body: AskRequest):
             usage["output_tokens"],
             len(response.citations),
         )
-        _log_rag_query(
+        rag_query_id = _log_rag_query(
             db,
             job_id=job_id,
             question=body.question,
@@ -583,7 +615,66 @@ def ask(request: Request, job_id: str, body: AskRequest):
             retrieval_ms=retrieval_ms,
             generation_ms=generation_ms,
         )
+        if rag_query_id:
+            http_response.headers["X-Trace-Id"] = rag_query_id
         return response
+
+
+_RAG_OUTCOMES = {"answered", "refused", "error"}
+
+
+@app.get(
+    "/admin/rag_queries",
+    response_model=list[RagQueryListItem],
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit(read_limit)
+def list_rag_queries(
+    request: Request,
+    outcome: Optional[str] = Query(default=None),
+    job_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=50),
+    before: Optional[str] = Query(default=None),
+):
+    if outcome is not None and outcome not in _RAG_OUTCOMES:
+        raise HTTPException(status_code=400, detail=f"Unknown outcome: {outcome}")
+
+    limit = max(1, min(limit, 200))
+
+    before_dt: Optional[datetime] = None
+    if before is not None:
+        try:
+            before_dt = datetime.fromisoformat(before)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="before must be an ISO 8601 timestamp"
+            )
+
+    with get_session() as db:
+        q = db.query(RagQuery)
+        if outcome is not None:
+            q = q.filter(RagQuery.outcome == outcome)
+        if job_id is not None:
+            q = q.filter(RagQuery.job_id == job_id)
+        if before_dt is not None:
+            q = q.filter(RagQuery.created_at < before_dt)
+        rows = q.order_by(RagQuery.created_at.desc()).limit(limit).all()
+        return [
+            RagQueryListItem(
+                id=r.id,
+                job_id=r.job_id,
+                question=r.question[:200],
+                outcome=r.outcome,
+                retrieval_ms=r.retrieval_ms,
+                generation_ms=r.generation_ms,
+                input_tokens=r.input_tokens,
+                output_tokens=r.output_tokens,
+                grounding_error=r.grounding_error,
+                error=r.error,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
 
 
 @app.get(

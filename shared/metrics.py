@@ -60,3 +60,8 @@ rag_tokens_total = Counter(
     "Anthropic API token usage attributed to /ask.",
     labelnames=("direction",),
 )
+
+rag_query_log_failures_total = Counter(
+    "rag_query_log_failures_total",
+    "rag_queries audit-row writes that failed and were swallowed.",
+)

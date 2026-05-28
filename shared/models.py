@@ -184,9 +184,7 @@ class RagQuery(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    job_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("jobs.id"), index=True
-    )
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id"))
     question: Mapped[str] = mapped_column(Text)
     top_k: Mapped[int] = mapped_column(Integer)
     model: Mapped[str] = mapped_column(String)
@@ -209,6 +207,20 @@ class RagQuery(Base):
     generation_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow
+    )
+
+    # job_id leads the composite, so it also covers "this job's queries, newest
+    # first" and plain WHERE job_id = ? lookups; a standalone job_id index would
+    # be redundant. outcome and created_at back the admin listing's filter and
+    # its created_at-DESC keyset pagination.
+    __table_args__ = (
+        Index(
+            "ix_rag_queries_job_id_created_at",
+            "job_id",
+            text("created_at DESC"),
+        ),
+        Index("ix_rag_queries_outcome", "outcome"),
+        Index("ix_rag_queries_created_at", text("created_at DESC")),
     )
 
     def __repr__(self) -> str:
