@@ -31,6 +31,62 @@ This pipeline handles that pre-screening layer: classify every clause, match ris
 The goal is to automate the repetitive part and surface structured evidence so that review is faster and more consistent.
 The judgment on what to negotiate stays with the lawyer.
 
+## Highlights
+
+A few flagship properties up front; grouped detail below is collapsed to keep this scannable.
+
+- **At-least-once delivery** with crash recovery: Redis Streams consumer groups plus `XAUTOCLAIM` reclaim of dead workers. No in-flight job is silently lost.
+- **Two-tier ML cascade** lifts span-extraction trimmed macro F1 from 0.41 (zero-shot) to 0.73 (fine-tuned base).
+- **Grounded RAG**: a post-generation citation check rejects fabricated quotes or chunk ids with `502`.
+
+<details>
+<summary><b>Reliability and delivery</b> - idempotency, stage-checkpointed retries</summary>
+
+- **At-least-once delivery** via Redis Streams consumer groups. Jobs stay in the pending-entries list until `XACK`. Crashed workers are reclaimed by `XAUTOCLAIM` after a configurable idle threshold; no in-flight job is silently lost.
+- **Idempotent `POST /jobs`** with client-supplied or content-hash dedup keys. Concurrent first-time submissions race at the DB layer via a unique constraint; the loser returns the winner's `job_id` with `Idempotent-Replay: true`.
+- **Stage-checkpointed retries.** The worker persists which pipeline stage completed before a failure. A retry resumes from the last successful stage; a transient scoring error does not re-run ingestion or classification.
+
+</details>
+
+<details>
+<summary><b>API hardening</b> - timing-safe auth, pre-parse upload caps, rate limits</summary>
+
+- **Hardened API layer.** Timing-safe key auth (`hmac.compare_digest`), pre-parse upload cap via middleware (411 and 413 before multipart parsing is attempted), and per-IP rate limits with `Retry-After`.
+
+</details>
+
+<details>
+<summary><b>Observability and load</b> - Prometheus on both tiers, Locust results</summary>
+
+- **Prometheus metrics on both tiers.** API and worker each expose a scrape target. Tracked series: submissions, completions, per-stage duration histograms, per-stage error counts, and queue depth.
+- **Empirically validated under Locust.** 9.6 jobs/min sustained at one worker, submit p50 14ms under load and 62ms under a 20 VU spike, zero server errors across both. Rate limiting fires with `Retry-After`; span extractor timeout degrades to tier-1 labels without failing the job.
+
+</details>
+
+<details>
+<summary><b>ML cascade</b> - BART-MNLI zero-shot into fine-tuned RoBERTa span extraction</summary>
+
+- **Cascade ML pipeline.** BART-MNLI zero-shot classifies a clause type across 10 labels. A fine-tuned RoBERTa model trained on CUAD v1 extracts verbatim spans when tier-1 confidence meets the threshold and the clause maps to a CUAD category. Trimmed macro F1 goes from 0.41 (zero-shot) to 0.73 (fine-tuned base). A spaCy `Matcher` and YAML rule DSL layer produces explainable risk flags with exact character offsets. Per-chunk extraction timeout falls back to tier-1 without failing the job.
+
+</details>
+
+<details>
+<summary><b>RAG and evals</b> - grounded citations, audit log, LLM-as-judge harness</summary>
+
+- **RAG query endpoint with verified citations.** `POST /jobs/{id}/ask` runs free-text questions against the contract's chunks. Local BGE-small embeddings stored in a pgvector column on Postgres, cosine-similarity retrieval, Claude generation with structured outputs, and a post-generation grounding check that rejects fabricated quotes or chunk ids with `502`. The deterministic pipeline remains fully functional without this endpoint.
+- **Auditable RAG calls.** Every `/ask` is persisted to a `rag_queries` table: the question, ordered retrieved chunk ids, answer, citations, token usage, retrieval and generation latency, and the terminal outcome (answered, refused, or error with the grounding failure). Storing chunk ids rather than text reconstructs the exact prompt for any past call, since chunks are immutable. Writes are best-effort and never fail a good answer.
+- **Hand-rolled RAG eval harness with LLM-as-judge.** 30-case dataset scored across faithfulness, citation accuracy, completeness, and refusal correctness. Judge model (`claude-haiku-4-5`) is deliberately different from the generator (`claude-sonnet-4-6`) to reduce self-grading bias. First-run aggregate 0.967 / 1.000 / 0.967 / 1.000 with multi-clause synthesis as the documented soft spot at 0.833 faithfulness. CI re-runs a frozen subset on PRs touching the RAG surface.
+
+</details>
+
+<details>
+<summary><b>Testing and ops</b> - 169 tests, single-command stack</summary>
+
+- **169 tests** covering API contracts, pipeline stages, queue semantics, auth, rate limits, idempotency, upload sizing, span extraction, timeout fallback, embeddings, citation grounding, and the RAG endpoint.
+- **Single-command local stack** via Docker Compose (Postgres+pgvector, Redis, MinIO, API, worker).
+
+</details>
+
 ## Architecture
 
 Four tiers, deliberately separated. Each scales, fails, and deploys independently.
@@ -129,61 +185,6 @@ flowchart LR
 
 RAG eval is a 30-case dataset scored by an LLM judge (`claude-haiku-4-5`) that is deliberately different from the generator (`claude-sonnet-4-6`) to reduce self-grading bias. Multi-clause synthesis is the documented soft spot at 0.833 faithfulness. Full methodology is in [cuad/README.md](cuad/README.md).
 
-## Highlights
-
-A few flagship properties up front; grouped detail below is collapsed to keep this scannable.
-
-- **At-least-once delivery** with crash recovery: Redis Streams consumer groups plus `XAUTOCLAIM` reclaim of dead workers. No in-flight job is silently lost.
-- **Two-tier ML cascade** lifts span-extraction trimmed macro F1 from 0.41 (zero-shot) to 0.73 (fine-tuned base).
-- **Grounded RAG**: a post-generation citation check rejects fabricated quotes or chunk ids with `502`.
-
-<details>
-<summary><b>Reliability and delivery</b> - idempotency, stage-checkpointed retries</summary>
-
-- **At-least-once delivery** via Redis Streams consumer groups. Jobs stay in the pending-entries list until `XACK`. Crashed workers are reclaimed by `XAUTOCLAIM` after a configurable idle threshold; no in-flight job is silently lost.
-- **Idempotent `POST /jobs`** with client-supplied or content-hash dedup keys. Concurrent first-time submissions race at the DB layer via a unique constraint; the loser returns the winner's `job_id` with `Idempotent-Replay: true`.
-- **Stage-checkpointed retries.** The worker persists which pipeline stage completed before a failure. A retry resumes from the last successful stage; a transient scoring error does not re-run ingestion or classification.
-
-</details>
-
-<details>
-<summary><b>API hardening</b> - timing-safe auth, pre-parse upload caps, rate limits</summary>
-
-- **Hardened API layer.** Timing-safe key auth (`hmac.compare_digest`), pre-parse upload cap via middleware (411 and 413 before multipart parsing is attempted), and per-IP rate limits with `Retry-After`.
-
-</details>
-
-<details>
-<summary><b>Observability and load</b> - Prometheus on both tiers, Locust results</summary>
-
-- **Prometheus metrics on both tiers.** API and worker each expose a scrape target. Tracked series: submissions, completions, per-stage duration histograms, per-stage error counts, and queue depth.
-- **Empirically validated under Locust.** 9.6 jobs/min sustained at one worker, submit p50 14ms under load and 62ms under a 20 VU spike, zero server errors across both. Rate limiting fires with `Retry-After`; span extractor timeout degrades to tier-1 labels without failing the job.
-
-</details>
-
-<details>
-<summary><b>ML cascade</b> - BART-MNLI zero-shot into fine-tuned RoBERTa span extraction</summary>
-
-- **Cascade ML pipeline.** BART-MNLI zero-shot classifies a clause type across 10 labels. A fine-tuned RoBERTa model trained on CUAD v1 extracts verbatim spans when tier-1 confidence meets the threshold and the clause maps to a CUAD category. Trimmed macro F1 goes from 0.41 (zero-shot) to 0.73 (fine-tuned base). A spaCy `Matcher` and YAML rule DSL layer produces explainable risk flags with exact character offsets. Per-chunk extraction timeout falls back to tier-1 without failing the job.
-
-</details>
-
-<details>
-<summary><b>RAG and evals</b> - grounded citations, audit log, LLM-as-judge harness</summary>
-
-- **RAG query endpoint with verified citations.** `POST /jobs/{id}/ask` runs free-text questions against the contract's chunks. Local BGE-small embeddings stored in a pgvector column on Postgres, cosine-similarity retrieval, Claude generation with structured outputs, and a post-generation grounding check that rejects fabricated quotes or chunk ids with `502`. The deterministic pipeline remains fully functional without this endpoint.
-- **Auditable RAG calls.** Every `/ask` is persisted to a `rag_queries` table: the question, ordered retrieved chunk ids, answer, citations, token usage, retrieval and generation latency, and the terminal outcome (answered, refused, or error with the grounding failure). Storing chunk ids rather than text reconstructs the exact prompt for any past call, since chunks are immutable. Writes are best-effort and never fail a good answer.
-- **Hand-rolled RAG eval harness with LLM-as-judge.** 30-case dataset scored across faithfulness, citation accuracy, completeness, and refusal correctness. Judge model (`claude-haiku-4-5`) is deliberately different from the generator (`claude-sonnet-4-6`) to reduce self-grading bias. First-run aggregate 0.967 / 1.000 / 0.967 / 1.000 with multi-clause synthesis as the documented soft spot at 0.833 faithfulness. CI re-runs a frozen subset on PRs touching the RAG surface.
-
-</details>
-
-<details>
-<summary><b>Testing and ops</b> - 169 tests, single-command stack</summary>
-
-- **169 tests** covering API contracts, pipeline stages, queue semantics, auth, rate limits, idempotency, upload sizing, span extraction, timeout fallback, embeddings, citation grounding, and the RAG endpoint.
-- **Single-command local stack** via Docker Compose (Postgres+pgvector, Redis, MinIO, API, worker).
-
-</details>
 
 ## Stack
 
